@@ -32,22 +32,23 @@ interface SettingsViewProps {
   onLoginGitHub: () => Promise<void>;
   onResetKeybindings: () => Promise<void>;
   onCheckUpdates: () => Promise<void>;
-  onOpenUpdate: () => Promise<void>;
-  onOpenExternal: (page: "openai-api-keys" | "github-cli" | "github-applications" | "latest-release") => Promise<void>;
+  onInstallUpdate: () => Promise<void>;
+  onOpenUpdatePage: () => Promise<void>;
+  onOpenExternal: (page: "chatgpt" | "openai-api-keys" | "github-cli" | "github-applications" | "latest-release") => Promise<void>;
 }
 
 const CATEGORIES: readonly { id: SettingsCategory; label: string; icon: string; search: string }[] = [
   { id: "general", label: "全般", icon: "⌂", search: "全般 自動保存 起動" },
   { id: "editor", label: "エディター", icon: "Aa", search: "エディター 縦書き 横書き フォント テーマ 文字 行間 幅" },
   { id: "ai", label: "AI", icon: "◇", search: "AI OpenAI ChatGPT API model レンズ" },
-  { id: "accounts", label: "アカウント", icon: "◎", search: "アカウント GitHub ログイン 認証" },
+  { id: "accounts", label: "アカウント", icon: "◎", search: "アカウント ChatGPT OpenAI GitHub ログイン 認証" },
   { id: "keyboard", label: "キーボード", icon: "⌨", search: "キーボード ショートカット キー割り当て" },
   { id: "updates", label: "更新", icon: "↻", search: "更新 アップデート install download version" },
   { id: "about", label: "情報", icon: "i", search: "情報 version license privacy OSS" }
 ] as const;
 
 const EMPTY_CONNECTIONS: ConnectionStatus = {
-  openai: { connected: false, state: "disconnected", message: "OpenAI APIは未接続です。", verifiedAt: null },
+  openai: { connected: false, state: "disconnected", storage: "none", message: "OpenAI APIは未接続です。", verifiedAt: null },
   github: { cliInstalled: false, connected: false, state: "unavailable", message: "GitHub CLIの状態を確認していません。" }
 };
 
@@ -76,9 +77,16 @@ export function SettingsView(props: SettingsViewProps): ReactNode {
   useEffect(() => { setModelDraft(props.settings.ai.openaiModel); }, [props.settings.ai.openaiModel]);
   useEffect(() => { void props.onRefreshConnections(); }, []);
   useEffect(() => () => { void window.novelLens.setKeybindingRecording(false); }, []);
+  useEffect(() => {
+    const closeOnEscape = (event: KeyboardEvent): void => { if (event.key === "Escape" && recording === null) props.onClose(); };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [props.onClose, recording]);
 
   const visibleCategories = useMemo(() => CATEGORIES.filter((item) => settingMatches(query, item.search)), [query]);
   const connections = props.connections ?? EMPTY_CONNECTIONS;
+  const updateInProgress = props.updateStatus?.state === "downloading" || props.updateStatus?.state === "verifying" || props.updateStatus?.state === "installing";
+  const canInstallUpdate = (props.updateStatus?.state === "available" && props.updateStatus.downloadUrl !== null) || props.updateStatus?.state === "ready";
 
   useEffect(() => {
     if (visibleCategories.length > 0 && !visibleCategories.some((item) => item.id === props.category)) props.setCategory(visibleCategories[0]!.id);
@@ -169,17 +177,22 @@ export function SettingsView(props: SettingsViewProps): ReactNode {
           <SettingRow title="設定の保存場所" description="ユーザー設定はOSのNovel Lens設定フォルダーに保存します。APIキーとGitHub tokenは含みません。"><StatusBadge state="ok">ローカルのみ</StatusBadge></SettingRow>
         </SettingsSection>}
         {props.category === "editor" && <SettingsSection eyebrow="EDITOR" title="エディター" lead="VS Codeと同じように、ユーザー既定値と作品固有の上書きを分けます。">{editorPanel}</SettingsSection>}
-        {props.category === "ai" && <SettingsSection eyebrow="AI CONNECTION" title="AI" lead="ChatGPTに作品を書かせる入口ではなく、作者が選んだ範囲を読むレンズの接続設定です。">
+        {props.category === "ai" && <SettingsSection eyebrow="AI CONNECTION" title="AIレンズ（OpenAI API）" lead="ChatGPTアカウントではなく、作者が選んだ範囲を読むためのOpenAI API接続です。">
           <SettingRow title="既定の接続" description="新しく開いたレンズで最初に選ばれる接続です。"><select value={props.settings.ai.defaultProvider} onChange={(event) => void props.onUpdateUser({ ai: { defaultProvider: event.target.value as "mock" | "openai" } })}><option value="mock">Offline Mock（通信なし）</option><option value="openai">OpenAI API</option></select></SettingRow>
           <SettingRow title="OpenAI model ID" description="利用者のAPI projectで利用できる正確なmodel IDを指定します。"><input value={modelDraft} onChange={(event) => setModelDraft(event.target.value)} onBlur={() => { if (modelDraft !== props.settings.ai.openaiModel) void props.onUpdateUser({ ai: { openaiModel: modelDraft } }); }} onKeyDown={(event) => { if (event.key === "Enter") event.currentTarget.blur(); }} /></SettingRow>
           <div className="connection-card">
-            <div className="connection-heading"><div><h3>OpenAI API</h3><p>{connections.openai.message}</p></div><StatusBadge state={connections.openai.connected ? "ok" : connections.openai.state === "error" ? "warn" : "muted"}>{connections.openai.connected ? "接続済み" : "未接続"}</StatusBadge></div>
-            {!connections.openai.connected ? <div className="connection-form"><input type="password" autoComplete="off" spellCheck={false} value={openAIKey} onChange={(event) => setOpenAIKey(event.target.value)} placeholder="API key（この起動中だけ）" aria-label="OpenAI API key" /><button className="primary" disabled={busy !== null || openAIKey.trim().length < 20} onClick={() => void run("openai", async () => { await props.onConnectOpenAI(openAIKey); setOpenAIKey(""); })}>接続して確認</button></div> : <button className="secondary" disabled={busy !== null} onClick={() => void run("openai", props.onDisconnectOpenAI)}>接続を解除</button>}
+            <div className="connection-heading"><div><h3>OpenAI API</h3><p>{connections.openai.message}</p></div><StatusBadge state={connections.openai.connected ? "ok" : connections.openai.state === "error" ? "warn" : "muted"}>{connections.openai.connected ? connections.openai.storage === "os" ? "OSへ保存済み" : "接続済み" : "未接続"}</StatusBadge></div>
+            {!connections.openai.connected ? <div className="connection-form"><input type="password" autoComplete="off" spellCheck={false} value={openAIKey} onChange={(event) => setOpenAIKey(event.target.value)} placeholder="OpenAI API key" aria-label="OpenAI API key" /><button className="primary" disabled={busy !== null || openAIKey.trim().length < 20} onClick={() => void run("openai", async () => { await props.onConnectOpenAI(openAIKey); setOpenAIKey(""); })}>APIキーを接続して確認</button></div> : <button className="secondary" disabled={busy !== null} onClick={() => void run("openai", props.onDisconnectOpenAI)}>接続と保存済みキーを削除</button>}
             <div className="connection-links"><button onClick={() => void props.onOpenExternal("openai-api-keys")}>APIキーを作成・管理</button></div>
-            <p className="settings-note">ChatGPT Plus / Proのログイン枠を外部アプリで使う仕組みではありません。API Platformは別課金です。入力中だけこの画面のメモリを通り、接続確認後は消去してmain processのメモリだけに保持します。作品や設定ファイルには保存しません。</p>
+            <p className="settings-note">ChatGPT Plus / Proのログイン枠は利用しません。API Platformの請求と権限が適用されます。確認後のキーはrendererから消去し、利用可能な端末ではOSの暗号化ストレージへ保存します。作品やsettings.jsonには保存しません。</p>
           </div>
         </SettingsSection>}
         {props.category === "accounts" && <SettingsSection eyebrow="ACCOUNTS" title="アカウント" lead="認証情報はNovel Lensのサーバーを経由しません。">
+          <div className="connection-card">
+            <div className="connection-heading"><div><h3>ChatGPT</h3><p>ブラウザのChatGPTログイン画面を開きます。Novel Lensとは接続されません。</p></div><StatusBadge state="muted">ブラウザ</StatusBadge></div>
+            <button className="secondary" onClick={() => void props.onOpenExternal("chatgpt")}>ChatGPTを開く</button>
+            <p className="settings-note">ブラウザのログイン状態やsubscriptionをNovel Lensが読み取ることはありません。AIレンズは上のOpenAI API接続を使用します。</p>
+          </div>
           <div className="connection-card">
             <div className="connection-heading"><div><h3>GitHub</h3><p>{connections.github.message}</p></div><StatusBadge state={connections.github.connected ? "ok" : connections.github.state === "error" ? "warn" : "muted"}>{connections.github.connected ? "接続済み" : connections.github.cliInstalled ? "未ログイン" : "CLIなし"}</StatusBadge></div>
             {!connections.github.connected && connections.github.cliInstalled && <button className="primary" disabled={busy !== null} onClick={() => void run("github", props.onLoginGitHub)}>{busy === "github" ? "ブラウザで確認中…" : "GitHubへログイン"}</button>}
@@ -189,15 +202,16 @@ export function SettingsView(props: SettingsViewProps): ReactNode {
           </div>
         </SettingsSection>}
         {props.category === "keyboard" && <SettingsSection eyebrow="KEYBOARD" title="キーボード ショートカット" lead="キー割り当てをクリックし、使いたい組み合わせを押します。Backspaceで未設定にできます。">
-          <div className="keybinding-list">{COMMAND_DEFINITIONS.map((command) => <div className="keybinding-row" key={command.id}><div><small>{command.category}</small><b>{command.label}</b><code>{command.id}</code></div><button autoFocus={recording === command.id} className={recording === command.id ? "recording" : ""} onClick={() => beginRecording(command.id)} onKeyDown={(event) => { if (recording === command.id) recordKey(event, command.id); }}>{recording === command.id ? "キーを入力…" : formatKeybinding(props.settings.keybindings[command.id])}</button><button className="reset-key" title="既定値へ戻す" onClick={() => void props.onUpdateUser({ keybindings: { [command.id]: command.defaultBinding } })}>↺</button></div>)}</div>
-          <button className="secondary" disabled={busy !== null} onClick={() => { if (window.confirm("すべてのショートカットを既定値へ戻しますか？")) void run("reset-keys", props.onResetKeybindings); }}>すべて既定値へ戻す</button>
+          <div className="keybinding-list">{COMMAND_DEFINITIONS.map((command) => <div className="keybinding-row" key={command.id}><div><small>{command.category}</small><b>{command.label}</b><code>{command.id}</code></div><button autoFocus={recording === command.id} className={recording === command.id ? "recording" : ""} onClick={() => beginRecording(command.id)} onKeyDown={(event) => { if (recording === command.id) recordKey(event, command.id); }}>{recording === command.id ? "キーを入力…" : formatKeybinding(props.settings.keybindings[command.id])}</button><button className="reset-key" title="既定値へ戻す" onClick={() => void run("keybinding", async () => { await props.onUpdateUser({ keybindings: { [command.id]: command.defaultBinding } }); finishRecording(); })}>↺</button></div>)}</div>
+          <button className="secondary" disabled={busy !== null} onClick={() => { if (window.confirm("すべてのショートカットを既定値へ戻しますか？")) void run("reset-keys", async () => { await props.onResetKeybindings(); finishRecording(); }); }}>すべて既定値へ戻す</button>
         </SettingsSection>}
         {props.category === "updates" && <SettingsSection eyebrow="UPDATES" title="更新" lead="GitHub Releasesを直接確認します。運営者サーバーやGitHub tokenは不要です。">
           <SettingRow title="起動時に確認" description="packaged版の起動後にGitHubへ1回だけ最新版を問い合わせます。原稿や設定は送りません。"><label className="toggle"><input type="checkbox" checked={props.settings.updates.checkOnStartup} onChange={(event) => void props.onUpdateUser({ updates: { checkOnStartup: event.target.checked } })} />{props.settings.updates.checkOnStartup ? "オン" : "オフ"}</label></SettingRow>
           <div className="update-card"><div><small>現在</small><strong>v{props.updateStatus?.currentVersion ?? props.appInfo?.version ?? "-"}</strong></div><span>→</span><div><small>最新版</small><strong>{props.updateStatus?.latestVersion === null || props.updateStatus === null ? "未確認" : `v${props.updateStatus.latestVersion}`}</strong></div></div>
           <p className="settings-note">{props.updateStatus?.message ?? "更新はまだ確認していません。"}</p>
-          <div className="settings-actions"><button className="primary" disabled={busy !== null || props.updateStatus?.state === "checking"} onClick={() => void run("updates", props.onCheckUpdates)}>{props.updateStatus?.state === "checking" ? "確認中…" : "今すぐ確認"}</button><button className="secondary" onClick={() => void props.onOpenUpdate()}>{props.updateStatus?.state === "available" ? "このOS用installerを開く" : "Releaseページを開く"}</button></div>
-          <p className="settings-note">作品フォルダーはアプリの外にあるため、更新・再install・uninstallで原稿を削除しません。macOSの無人自動更新は署名が必須なので、未署名previewではinstaller取得までに留めます。</p>
+          {props.updateStatus?.progress !== null && props.updateStatus?.progress !== undefined && <div className="update-progress" aria-label={`更新 ${props.updateStatus.progress}%`}><span style={{ width: `${props.updateStatus.progress}%` }} /></div>}
+          <div className="settings-actions"><button className="primary" disabled={busy !== null || props.updateStatus?.state === "checking" || updateInProgress} onClick={() => void run("updates", props.onCheckUpdates)}>{props.updateStatus?.state === "checking" ? "確認中…" : "今すぐ確認"}</button><button className="secondary" disabled={busy !== null || updateInProgress || !canInstallUpdate} onClick={() => void run("install", props.onInstallUpdate)}>{props.updateStatus?.state === "downloading" ? `ダウンロード中 ${props.updateStatus.progress ?? 0}%` : props.updateStatus?.state === "verifying" ? "SHA-256を確認中…" : props.updateStatus?.state === "installing" ? "installerを起動中…" : "ダウンロードして更新"}</button><button className="text-button" disabled={updateInProgress} onClick={() => void props.onOpenUpdatePage()}>Releaseページ</button></div>
+          <p className="settings-note">作品フォルダーはアプリの外にあるため、更新・再install・uninstallで原稿を削除しません。ダウンロードはGitHub ReleaseのSHA-256と照合します。preview版は未署名のため、起動後のOS警告を確認してください。</p>
         </SettingsSection>}
         {props.category === "about" && <SettingsSection eyebrow="ABOUT" title="Novel Lens" lead="作者が書くことを中心に置く、ローカル優先のOSS小説制作環境です。">
           <div className="about-grid"><span>Version</span><code>{props.appInfo?.version ?? "-"}</code><span>Platform</span><code>{props.appInfo?.platform ?? "desktop"}</code><span>License</span><code>Apache-2.0</code><span>データ</span><code>Markdown / local-first</code></div>

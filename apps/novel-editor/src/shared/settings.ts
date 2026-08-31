@@ -5,6 +5,11 @@ export type AppCommandId =
   | "history.checkpoint"
   | "file.export"
   | "view.settings"
+  | "view.settings.editor"
+  | "view.settings.ai"
+  | "view.settings.accounts"
+  | "view.settings.keyboard"
+  | "view.settings.updates"
   | "view.search"
   | "view.lens"
   | "view.history"
@@ -13,7 +18,7 @@ export type AppCommandId =
 export interface CommandDefinition {
   id: AppCommandId;
   label: string;
-  category: "ファイル" | "表示" | "履歴" | "更新";
+  category: "ファイル" | "表示" | "履歴" | "設定" | "更新";
   defaultBinding: string;
 }
 
@@ -24,6 +29,11 @@ export const COMMAND_DEFINITIONS: readonly CommandDefinition[] = [
   { id: "history.checkpoint", label: "保存点を作る", category: "履歴", defaultBinding: "Mod+Shift+S" },
   { id: "file.export", label: "Markdownを書き出す", category: "ファイル", defaultBinding: "Mod+Alt+E" },
   { id: "view.settings", label: "設定を開く", category: "表示", defaultBinding: "Mod+," },
+  { id: "view.settings.editor", label: "エディター設定を開く", category: "設定", defaultBinding: "" },
+  { id: "view.settings.ai", label: "AI接続設定を開く", category: "設定", defaultBinding: "" },
+  { id: "view.settings.accounts", label: "アカウント設定を開く", category: "設定", defaultBinding: "" },
+  { id: "view.settings.keyboard", label: "キーボード ショートカットを開く", category: "設定", defaultBinding: "" },
+  { id: "view.settings.updates", label: "更新設定を開く", category: "設定", defaultBinding: "" },
   { id: "view.search", label: "作品内検索", category: "表示", defaultBinding: "Mod+F" },
   { id: "view.lens", label: "編集レンズ", category: "表示", defaultBinding: "Mod+Shift+L" },
   { id: "view.history", label: "履歴", category: "表示", defaultBinding: "Mod+Shift+H" },

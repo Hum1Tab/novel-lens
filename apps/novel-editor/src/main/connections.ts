@@ -1,10 +1,13 @@
 import { spawn } from "node:child_process";
+import { join } from "node:path";
 
 import type { ConnectionStatus, GitHubConnectionStatus, OpenAIConnectionStatus } from "../shared/types.js";
+import { SecureCredentialStore } from "./secure-credentials.js";
 
 interface ProcessResult { exitCode: number; timedOut: boolean }
+class MissingGitHubCliError extends Error {}
 
-function runCommand(executable: "gh", args: readonly string[], timeoutMs: number, onOutput?: (text: string) => void): Promise<ProcessResult> {
+function runCommand(executable: string, args: readonly string[], timeoutMs: number, onOutput?: (text: string) => void): Promise<ProcessResult> {
   return new Promise((resolve, reject) => {
     const child = spawn(executable, [...args], {
       shell: false,
@@ -40,9 +43,11 @@ export class ConnectionManager {
   private openAIStatus: OpenAIConnectionStatus = {
     connected: false,
     state: "disconnected",
+    storage: "none",
     message: "OpenAI APIは未接続です。",
     verifiedAt: null
   };
+  private credentialStore: SecureCredentialStore | null = null;
   private githubStatus: GitHubConnectionStatus = {
     cliInstalled: false,
     connected: false,
@@ -50,8 +55,30 @@ export class ConnectionManager {
     message: "GitHub CLIの状態をまだ確認していません。"
   };
   private githubLoginInFlight: Promise<ConnectionStatus> | null = null;
+  private githubExecutable: string | null = null;
 
   constructor(private readonly onStatus: (status: ConnectionStatus) => void = () => undefined) {}
+
+  async initializeOpenAI(store: SecureCredentialStore): Promise<ConnectionStatus> {
+    this.credentialStore = store;
+    if (!store.available()) {
+      this.openAIStatus = { connected: false, state: "disconnected", storage: "none", message: "OSの暗号化ストレージを利用できないため、接続時はこの起動中だけ保持します。", verifiedAt: null };
+      return this.emit();
+    }
+    try {
+      const stored = await store.loadOpenAI();
+      if (stored === null) {
+        this.openAIStatus = { connected: false, state: "disconnected", storage: "none", message: "OpenAI APIは未接続です。", verifiedAt: null };
+      } else {
+        this.openAIKey = stored.apiKey;
+        this.openAIStatus = { connected: true, state: "connected", storage: "os", message: "OSの暗号化ストレージからOpenAI API接続を復元しました。", verifiedAt: stored.verifiedAt };
+      }
+    } catch (error) {
+      this.openAIKey = null;
+      this.openAIStatus = { connected: false, state: "error", storage: "none", message: error instanceof Error ? error.message : "OpenAI API接続を復元できませんでした。", verifiedAt: null };
+    }
+    return this.emit();
+  }
 
   statusSnapshot(): ConnectionStatus {
     return { openai: { ...this.openAIStatus }, github: { ...this.githubStatus } };
@@ -65,7 +92,7 @@ export class ConnectionManager {
   async connectOpenAI(apiKey: string): Promise<ConnectionStatus> {
     const candidate = apiKey.trim();
     if (!/^\S{20,512}$/u.test(candidate)) throw new Error("OpenAI APIキーの形式を確認してください。");
-    this.openAIStatus = { connected: false, state: "checking", message: "OpenAI APIへの接続を確認しています…", verifiedAt: null };
+    this.openAIStatus = { connected: false, state: "checking", storage: "none", message: "OpenAI APIへの接続を確認しています…", verifiedAt: null };
     this.emit();
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 20_000);
@@ -81,12 +108,23 @@ export class ConnectionManager {
       if (!response.ok) throw new Error(`OpenAI APIへ接続できませんでした（HTTP ${response.status}）。`);
       this.openAIKey = candidate;
       const verifiedAt = new Date().toISOString();
-      this.openAIStatus = { connected: true, state: "connected", message: "OpenAI APIへ接続済みです。この起動中だけ保持します。", verifiedAt };
+      let storage: OpenAIConnectionStatus["storage"] = "memory";
+      let message = "OpenAI APIへ接続済みです。この起動中だけ保持します。";
+      if (this.credentialStore?.available()) {
+        try {
+          await this.credentialStore.saveOpenAI({ apiKey: candidate, verifiedAt });
+          storage = "os";
+          message = "OpenAI APIへ接続済みです。キーはOSの暗号化ストレージへ保存しました。";
+        } catch {
+          message = "OpenAI APIへ接続済みです。OSへ保存できなかったため、この起動中だけ保持します。";
+        }
+      }
+      this.openAIStatus = { connected: true, state: "connected", storage, message, verifiedAt };
       return this.emit();
     } catch (error) {
       this.openAIKey = null;
       const message = controller.signal.aborted ? "OpenAI APIへの接続確認が時間切れになりました。" : error instanceof Error ? error.message : "OpenAI APIへ接続できませんでした。";
-      this.openAIStatus = { connected: false, state: "error", message, verifiedAt: null };
+      this.openAIStatus = { connected: false, state: "error", storage: "none", message, verifiedAt: null };
       this.emit();
       throw new Error(message);
     } finally {
@@ -94,9 +132,10 @@ export class ConnectionManager {
     }
   }
 
-  disconnectOpenAI(): ConnectionStatus {
+  async disconnectOpenAI(): Promise<ConnectionStatus> {
     this.openAIKey = null;
-    this.openAIStatus = { connected: false, state: "disconnected", message: "OpenAI API接続を解除しました。", verifiedAt: null };
+    await this.credentialStore?.removeOpenAI();
+    this.openAIStatus = { connected: false, state: "disconnected", storage: "none", message: "OpenAI API接続と保存済みキーを削除しました。", verifiedAt: null };
     return this.emit();
   }
 
@@ -119,9 +158,11 @@ export class ConnectionManager {
 
   private async performGitHubLogin(): Promise<ConnectionStatus> {
     try {
+      const executable = this.githubExecutable ?? await this.resolveGitHubCli();
+      if (executable === null) throw new MissingGitHubCliError("GitHub CLIが見つかりません。");
       let rollingOutput = "";
       let shownCode: string | null = null;
-      const result = await runCommand("gh", ["auth", "login", "--web", "--clipboard", "--hostname", "github.com", "--git-protocol", "https", "--skip-ssh-key"], 10 * 60_000, (chunk) => {
+      const result = await runCommand(executable, ["auth", "login", "--web", "--clipboard", "--hostname", "github.com", "--git-protocol", "https", "--skip-ssh-key"], 10 * 60_000, (chunk) => {
         rollingOutput = `${rollingOutput}${chunk}`.slice(-500);
         const code = /\b[A-Z0-9]{4}-[A-Z0-9]{4}\b/u.exec(rollingOutput)?.[0] ?? null;
         if (code !== null && code !== shownCode) {
@@ -135,7 +176,7 @@ export class ConnectionManager {
       this.githubStatus = await this.probeGitHub();
       return this.emit();
     } catch (error) {
-      const unavailable = error instanceof Error && "code" in error && error.code === "ENOENT";
+      const unavailable = error instanceof MissingGitHubCliError || (error instanceof Error && "code" in error && error.code === "ENOENT");
       const message = unavailable ? "GitHub CLIが見つかりません。先に公式GitHub CLIをinstallしてください。" : error instanceof Error ? error.message : "GitHubログインを完了できませんでした。";
       this.githubStatus = { cliInstalled: !unavailable, connected: false, state: unavailable ? "unavailable" : "error", message };
       this.emit();
@@ -145,15 +186,39 @@ export class ConnectionManager {
 
   private async probeGitHub(): Promise<GitHubConnectionStatus> {
     try {
-      const version = await runCommand("gh", ["--version"], 10_000);
-      if (version.exitCode !== 0) return { cliInstalled: false, connected: false, state: "unavailable", message: "GitHub CLIを起動できません。" };
-      const auth = await runCommand("gh", ["auth", "status", "--active", "--hostname", "github.com"], 20_000);
+      const executable = await this.resolveGitHubCli();
+      if (executable === null) return { cliInstalled: false, connected: false, state: "unavailable", message: "GitHub CLIが見つかりません。" };
+      this.githubExecutable = executable;
+      const auth = await runCommand(executable, ["auth", "status", "--active", "--hostname", "github.com"], 20_000);
       if (auth.exitCode === 0) return { cliInstalled: true, connected: true, state: "connected", message: "利用者のGitHub CLI認証へ接続済みです。Novel Lensはtokenを読みません。" };
       return { cliInstalled: true, connected: false, state: "disconnected", message: "GitHub CLIはinstall済みですが、github.comへ未ログインです。" };
     } catch (error) {
       const unavailable = error instanceof Error && "code" in error && error.code === "ENOENT";
       return { cliInstalled: !unavailable, connected: false, state: unavailable ? "unavailable" : "error", message: unavailable ? "GitHub CLIが見つかりません。" : "GitHub CLIの認証状態を確認できません。" };
     }
+  }
+
+  private async resolveGitHubCli(): Promise<string | null> {
+    const candidates = [
+      this.githubExecutable,
+      "gh",
+      process.platform === "win32" && process.env["ProgramFiles"] ? join(process.env["ProgramFiles"], "GitHub CLI", "gh.exe") : null,
+      process.platform === "win32" && process.env["LOCALAPPDATA"] ? join(process.env["LOCALAPPDATA"], "Programs", "GitHub CLI", "gh.exe") : null,
+      process.platform === "darwin" ? "/opt/homebrew/bin/gh" : null,
+      process.platform === "darwin" ? "/usr/local/bin/gh" : null,
+      process.platform === "linux" ? "/usr/bin/gh" : null,
+      process.platform === "linux" ? "/usr/local/bin/gh" : null,
+      process.platform === "linux" ? "/home/linuxbrew/.linuxbrew/bin/gh" : null
+    ].filter((candidate, index, all): candidate is string => candidate !== null && all.indexOf(candidate) === index);
+    for (const candidate of candidates) {
+      try {
+        const version = await runCommand(candidate, ["--version"], 10_000);
+        if (version.exitCode === 0) return candidate;
+      } catch (error) {
+        if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) continue;
+      }
+    }
+    return null;
   }
 
   private emit(): ConnectionStatus {

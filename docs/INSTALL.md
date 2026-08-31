@@ -39,6 +39,12 @@ shasum -a 256 Novel-Lens-*
 
 ## アプリ内更新
 
+install済みのNovel Lensでは「設定 → 更新」から最新版を確認できます。packaged版は「起動時に確認」をオンにすると起動後に自動確認します。更新がある場合は「ダウンロードして更新」を押すと、現在のOS・CPU用installerをtemporary directoryへ取得し、GitHub ReleaseのSHA-256と一致した場合だけ起動します。
+
+これは無人installではありません。未署名previewではOSの警告内容を確認し、installer画面で続行してください。作品原稿はinstall先とは別の利用者指定フォルダーに残ります。
+
+## アプリ内更新
+
 「設定 → 更新 → 今すぐ確認」は、tokenなしで公開GitHub Releasesへ接続し、現在のversionと最新版を比較する。新しいversionがある場合は現在のOS・CPU用installerを開く。packaged版では「起動時に確認」を有効にすると、起動後に1回だけ同じ確認を行う。原稿、作品名、設定、GitHub認証は送信しない。
 
 macOSの完全自動更新はcode signingが必須であり、Linuxはpackage managerとの整合も必要になるため、v0.2では全OS共通で「最新版確認と正しいinstallerへの案内」までを安全な共通動作とする。

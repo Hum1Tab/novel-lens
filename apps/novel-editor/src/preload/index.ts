@@ -34,7 +34,8 @@ const api: NovelLensApi = {
   disconnectOpenAI: () => invoke("connections:openai-disconnect"),
   loginGitHub: () => invoke("connections:github-login"),
   checkForUpdates: () => invoke("updates:check"),
-  openUpdateDownload: () => invoke("updates:open-download"),
+  installUpdate: () => invoke("updates:install"),
+  openUpdatePage: () => invoke("updates:open-page"),
   openExternalPage: (page) => invoke("app:open-external", page),
   onMenuAction: (listener) => {
     const handler = (_event: Electron.IpcRendererEvent, action: AppCommandId) => listener(action);

@@ -55,7 +55,6 @@ export interface LensRunInput {
   chapters: LensChapterInput[];
   provider: LensProviderId;
   modelId: string;
-  apiKey?: string;
   conversation: LensMessage[];
 }
 
@@ -91,6 +90,7 @@ export interface AppInfo {
 export interface OpenAIConnectionStatus {
   connected: boolean;
   state: "disconnected" | "checking" | "connected" | "error";
+  storage: "none" | "memory" | "os";
   message: string;
   verifiedAt: string | null;
 }
@@ -108,11 +108,13 @@ export interface ConnectionStatus {
 }
 
 export interface UpdateStatus {
-  state: "idle" | "checking" | "current" | "available" | "error";
+  state: "idle" | "checking" | "current" | "available" | "downloading" | "verifying" | "ready" | "installing" | "error";
   currentVersion: string;
   latestVersion: string | null;
   checkedAt: string | null;
   downloadUrl: string | null;
+  assetName: string | null;
+  progress: number | null;
   releaseUrl: string;
   message: string;
 }
@@ -148,8 +150,9 @@ export interface NovelLensApi {
   disconnectOpenAI(): Promise<ConnectionStatus>;
   loginGitHub(): Promise<ConnectionStatus>;
   checkForUpdates(): Promise<UpdateStatus>;
-  openUpdateDownload(): Promise<void>;
-  openExternalPage(page: "openai-api-keys" | "github-cli" | "github-applications" | "latest-release"): Promise<void>;
+  installUpdate(): Promise<UpdateStatus>;
+  openUpdatePage(): Promise<void>;
+  openExternalPage(page: "chatgpt" | "openai-api-keys" | "github-cli" | "github-applications" | "latest-release"): Promise<void>;
   onMenuAction(listener: (action: AppCommandId) => void): () => void;
   onConnectionStatus(listener: (status: ConnectionStatus) => void): () => void;
   onUpdateStatus(listener: (status: UpdateStatus) => void): () => void;

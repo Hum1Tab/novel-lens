@@ -201,7 +201,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .settings-note { color: var(--settings-muted); font-size: 11px; line-height: 1.7; }
 .settings-error { width: min(900px, 100%); display: flex; justify-content: space-between; gap: 15px; margin-bottom: 18px; padding: 10px 12px; color: #f0c1ba; background: #512f2c; border: 1px solid #75413c; border-radius: 6px; font-size: 12px; }
 .settings-error button { color: inherit; background: transparent; border: 0; }
-.settings-actions { display: flex; gap: 9px; margin: 18px 0; }
+.settings-actions { display: flex; flex-wrap: wrap; gap: 9px; margin: 18px 0; }
 .toggle { display: flex; align-items: center; gap: 8px; font-size: 12px; }
 .toggle input { accent-color: var(--settings-accent); }
 .keybinding-list { margin: 17px 0 22px; }
@@ -217,6 +217,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .update-card small, .update-card strong { display: block; }
 .update-card small { color: var(--settings-muted); font-size: 9px; text-transform: uppercase; letter-spacing: .13em; }
 .update-card strong { margin-top: 3px; color: #f0f0ed; font-size: 20px; }
+.update-progress { height: 6px; margin: 12px 0 4px; overflow: hidden; background: #303536; border-radius: 999px; }
+.update-progress span { display: block; height: 100%; background: var(--settings-accent); border-radius: inherit; transition: width 160ms ease-out; }
 .about-grid { display: grid; grid-template-columns: 130px 1fr; gap: 10px; margin: 22px 0; padding: 20px; background: #202324; border: 1px solid var(--settings-line); border-radius: 8px; font-size: 12px; }
 .about-grid span { color: var(--settings-muted); }
 .about-grid code { color: #dfe2e1; }

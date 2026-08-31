@@ -7,10 +7,11 @@ All notable changes to Novel Lens are documented here.
 ### Added
 
 - Added a dedicated VS Code-inspired settings view with searchable categories and separate user/workspace scopes.
+- Added a native top-level Settings menu beside File and Edit, with direct links to every settings category.
 - Added editable, conflict-checked keyboard shortcuts that immediately rebuild the native application menu.
-- Added session-only OpenAI API connection verification outside the manuscript panel.
+- Added OpenAI API connection verification and OS-protected encrypted credential storage outside the manuscript panel.
 - Added GitHub CLI browser login and connection status without reading or storing the user's token.
-- Added an in-app update center that checks public GitHub Releases and opens the correct installer for the current OS and CPU.
+- Added an in-app update center that checks public GitHub Releases, downloads the correct installer, verifies its SHA-256, and launches it in one action.
 
 ### Changed
 

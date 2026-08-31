@@ -17,12 +17,12 @@ Novel Lensは、作者が所有するMarkdown原稿を正本にし、復元可�
 - AI引用のlocal完全一致検証。一意な根拠だけ原文へジャンプ
 - VS Code型の独立設定画面。ユーザー既定値と作品固有設定を分離
 - 競合を検出し、その場で変更できるキーボードショートカット
-- OpenAI APIのsession接続と、公式GitHub CLI browser flowによるGitHubログイン
-- GitHub Releasesを使うアプリ内更新確認とOS別installerへの案内
+- OpenAI APIキーの接続確認とOS保護領域への暗号化保存、公式GitHub CLI browser flowによるGitHubログイン
+- GitHub Releasesを使う自動更新確認と、OS別installerのdownload・SHA-256照合・起動
 
 APIキー、会話、AI raw responseはprojectへ保存しません。OpenAI利用時も`store:false`、toolなし、外部検索なし、自動retryなしで実行します。未選択章、ファイルpath、表示設定、履歴は送信しません。
 
-ChatGPT Plus / ProとOpenAI APIは別契約です。本アプリはChatGPT web sessionを流用せず、利用者自身のAPI keyを接続確認後にmain processのメモリだけへ保持します。GitHubは`gh auth login --web`を利用し、Novel Lens自身はtokenを読みません。
+ChatGPT Plus / ProとOpenAI APIは別契約です。本アプリはChatGPT web sessionを流用せず、利用者自身のAPI keyを接続確認後にOSの暗号化ストレージへ保存します（安全な保存先がない環境では起動中メモリのみ）。GitHubは`gh auth login --web`を利用し、Novel Lens自身はtokenを読みません。
 
 ## インストール
 
@@ -34,7 +34,7 @@ ChatGPT Plus / ProとOpenAI APIは別契約です。本アプリはChatGPT web s
 
 公開前のsource build手順と、署名されていないpreview buildの注意は[インストール案内](./docs/INSTALL.md)を参照してください。
 
-起動後は「設定 → 更新」から最新版を確認し、現在のOSとCPUに合うinstallerを直接開けます。作品は利用者が選んだフォルダーにあるため、更新や再installでは削除されません。
+起動後は「設定 → 更新」から最新版を確認し、現在のOSとCPUに合うinstallerを1ボタンでdownload・SHA-256照合・起動できます。packaged版は起動時の更新確認も選択できます。作品は利用者が選んだフォルダーにあるため、更新や再installでは削除されません。
 
 ### 最初の作品を開く
 

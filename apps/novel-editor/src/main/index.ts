@@ -1,14 +1,15 @@
 import { existsSync } from "node:fs";
-import { mkdir, readFile, readdir, realpath, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, readdir, realpath, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, join, resolve } from "node:path";
 
 import { ProjectStore, type ProjectSettings } from "@novel-lens/project-store";
 import { app, BrowserWindow, dialog, ipcMain, Menu, session, shell, type MenuItemConstructorOptions } from "electron";
 
 import { COMMAND_DEFINITIONS, defaultUserSettings, toElectronAccelerator, type AppCommandId, type UserSettings } from "../shared/settings.js";
-import { runLens } from "./lens.js";
+import { runLens, type LensExecutionInput } from "./lens.js";
 import type { ChapterDocument, LensRunInput, ProjectSummary } from "../shared/types.js";
 import { ConnectionManager } from "./connections.js";
+import { SecureCredentialStore } from "./secure-credentials.js";
 import { LATEST_RELEASE_PAGE, UpdateManager } from "./updates.js";
 import { UserSettingsStore } from "./user-settings.js";
 
@@ -27,6 +28,7 @@ let updateManager: UpdateManager | null = null;
 const connections = new ConnectionManager((status) => mainWindow?.webContents.send("connections:status", status));
 const PROJECT_MANIFEST = "novel-lens.json";
 const EXTERNAL_PAGES = {
+  chatgpt: "https://chatgpt.com/",
   "openai-api-keys": "https://platform.openai.com/api-keys",
   "github-cli": "https://cli.github.com/",
   "github-applications": "https://github.com/settings/applications",
@@ -272,8 +274,8 @@ function registerIpc(): void {
   });
   handle("lens:run", async (input) => {
     if (typeof input !== "object" || input === null) throw new Error("AI requestを確認してください。");
-    const request = { ...(input as LensRunInput) };
-    delete request.apiKey;
+    const request = { ...(input as LensRunInput) } as LensExecutionInput;
+    delete (request as LensExecutionInput).apiKey;
     if (request.provider === "openai") request.apiKey = connections.requireOpenAIKey();
     return runLens(request);
   });
@@ -288,9 +290,20 @@ function registerIpc(): void {
     if (updateManager === null) throw new Error("更新機能をまだ利用できません。");
     return updateManager.check();
   });
-  handle("updates:open-download", async () => {
+  handle("updates:install", async () => {
+    if (updateManager === null) throw new Error("更新機能をまだ利用できません。");
+    const status = await updateManager.install(async (installerPath) => {
+      if (process.platform === "linux" && installerPath.endsWith(".AppImage")) await chmod(installerPath, 0o700);
+      return shell.openPath(installerPath);
+    });
+    if (status.state === "installing" && process.platform === "win32") {
+      setTimeout(() => { closeApproved = true; app.quit(); }, 800);
+    }
+    return status;
+  });
+  handle("updates:open-page", async () => {
     const status = updateManager?.snapshot();
-    const target = status?.downloadUrl ?? status?.releaseUrl ?? LATEST_RELEASE_PAGE;
+    const target = status?.releaseUrl ?? LATEST_RELEASE_PAGE;
     const url = new URL(target);
     if (url.protocol !== "https:" || url.hostname !== "github.com" || !url.pathname.startsWith("/Hum1Tab/novel-lens/releases/")) throw new Error("更新先URLを確認できません。");
     await shell.openExternal(url.toString(), { activate: true });
@@ -308,9 +321,9 @@ function sendMenuAction(action: AppCommandId): void {
   mainWindow?.webContents.send("menu:action", action);
 }
 
-function commandMenuItem(id: AppCommandId, label?: string): MenuItemConstructorOptions {
+function commandMenuItem(id: AppCommandId, label?: string, includeAccelerator = true): MenuItemConstructorOptions {
   const definition = COMMAND_DEFINITIONS.find((item) => item.id === id)!;
-  const accelerator = keybindingRecording ? undefined : toElectronAccelerator(userSettings.keybindings[id]);
+  const accelerator = !includeAccelerator || keybindingRecording ? undefined : toElectronAccelerator(userSettings.keybindings[id]);
   return { label: label ?? definition.label, click: () => sendMenuAction(id), ...(accelerator === undefined ? {} : { accelerator }) };
 }
 
@@ -330,7 +343,8 @@ function installMenu(): void {
       ]
     },
     { label: "編集", submenu: [{ role: "undo" }, { role: "redo" }, { type: "separator" }, { role: "cut" }, { role: "copy" }, { role: "paste" }, { role: "selectAll" }] },
-    { label: "表示", submenu: [commandMenuItem("view.lens"), commandMenuItem("view.search"), commandMenuItem("view.history"), { type: "separator" }, commandMenuItem("view.settings"), { type: "separator" }, { role: "togglefullscreen" }, { role: "resetZoom" }, { role: "zoomIn" }, { role: "zoomOut" }] },
+    { label: "設定", submenu: [commandMenuItem("view.settings", "設定を開く…"), { type: "separator" }, commandMenuItem("view.settings.editor"), commandMenuItem("view.settings.ai"), commandMenuItem("view.settings.accounts"), commandMenuItem("view.settings.keyboard"), commandMenuItem("view.settings.updates")] },
+    { label: "表示", submenu: [commandMenuItem("view.lens"), commandMenuItem("view.search"), commandMenuItem("view.history"), { type: "separator" }, { role: "togglefullscreen" }, { role: "resetZoom" }, { role: "zoomIn" }, { role: "zoomOut" }] },
     { label: "ヘルプ", submenu: [commandMenuItem("updates.check"), { label: "GitHub Releasesを開く", click: () => { void openExternalPage("latest-release"); } }] }
   ];
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
@@ -383,7 +397,8 @@ else {
     session.defaultSession.setPermissionCheckHandler(() => false);
     settingsStore = new UserSettingsStore(join(app.getPath("userData"), "settings.json"));
     userSettings = await settingsStore.load();
-    updateManager = new UpdateManager(app.getVersion(), process.platform, process.arch, (status) => mainWindow?.webContents.send("updates:status", status));
+    updateManager = new UpdateManager(app.getVersion(), process.platform, process.arch, (status) => mainWindow?.webContents.send("updates:status", status), join(app.getPath("temp"), "Novel-Lens-updates"));
+    await connections.initializeOpenAI(new SecureCredentialStore(join(app.getPath("userData"), "openai-credential.bin")));
     registerIpc();
     installMenu();
     await createWindow();

@@ -18,9 +18,9 @@
 
 OpenAI公式APIはAPI keyまたはworkload identityのBearer credentialを受け付け、API keyをbrowser/appのコードへ埋め込まないよう案内している。[OpenAI API authentication](https://developers.openai.com/api/reference/overview#authentication)
 
-Novel Lensは運営者keyやChatGPT web sessionを持たない。利用者が設定画面へ入力したkeyで`GET /v1/models`を一度確認し、成功後はrenderer stateから消去してmain processのメモリだけへ保持する。作品・ユーザー設定・logへ保存せず、終了時に参照を破棄する。本文を送る直前には従来どおりscope同意を要求する。
+Novel Lensは運営者keyやChatGPT web sessionを持たない。利用者が設定画面へ入力したkeyで`GET /v1/models`を一度確認し、成功後はrenderer stateから消去する。keyはElectron `safeStorage`を通してOSユーザーの保護領域で暗号化したmain process専用ファイルへ保存し、作品・ユーザー設定・logには含めない。Linuxで安全なsecret backendがない場合は平文保存せず、起動中メモリだけへ保持する。本文を送る直前には従来どおりscope同意を要求する。
 
-「ChatGPTでログイン」という表示はしない。ChatGPT subscriptionを外部アプリのAPI entitlementとして扱える公式仕様が確認できないため、UIでは正確に「OpenAI API接続」とする。
+アカウント画面の「ChatGPTを開く」は公式webを既定browserで開くだけで、Novel Lensとの接続状態とは表示しない。ChatGPT subscriptionを外部アプリのAPI entitlementとして扱える公式仕様が確認できないため、AI設定では正確に「OpenAI API接続」とする。
 
 ## GitHub
 
@@ -30,6 +30,6 @@ Novel Lensは`gh auth token`を呼ばず、token値を読み取らない。`gh a
 
 ## Install / update
 
-installerはWindows NSIS/portable、macOS DMG/ZIP、Linux AppImage/debをGitHub Release workflowで生成する。v0.2の更新センターは公開GitHub Releases APIをtokenなしで確認し、現在のOS・CPUに一致する本repositoryのasset URLだけを開く。
+installerはWindows NSIS/portable、macOS DMG/ZIP、Linux AppImage/debをGitHub Release workflowで生成する。v0.2の更新センターは公開GitHub Releases APIをtokenなしで確認し、現在のOS・CPUに一致する本repositoryのassetだけをmain processでtemporary directoryへstream downloadする。GitHub asset digest（ない場合は同Releaseの`SHA256SUMS`）と照合できた場合だけOSでinstallerを起動する。
 
-Electron公式の完全自動更新はmacOSで署名が必須で、built-in updaterはLinuxを対象外としている。[Electron autoUpdater](https://www.electronjs.org/docs/latest/api/auto-updater/) そのためunsigned previewを含む現在は、全OSで確実に同じ安全性を保てる「確認 → 正しいinstallerを開く」を共通UXとする。署名済みstable channelが成立した後に、Windows/macOSのdownload・再起動installを追加する。
+Electron公式の完全自動更新はmacOSで署名が必須で、built-in updaterはLinuxを対象外としている。[Electron autoUpdater](https://www.electronjs.org/docs/latest/api/auto-updater/) そのためunsigned previewを含む現在は、全OS共通の「自動確認 → 明示操作でdownload・hash検証・installer起動」を採用し、無人installや権限昇格は行わない。署名済みstable channelが成立した後にWindows/macOSの再起動installを検討する。

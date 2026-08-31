@@ -37,7 +37,7 @@ const ROLE_IDS = Object.keys(ROLE_REGISTRY) as RoleId[];
 const DEFAULT_QUERY = "この範囲で、作者が見直す価値のある箇所を根拠付きで教えてください。";
 const EMPTY_THREADS = (): Record<RoleId, LensMessage[]> => ({ "first-reader": [], editor: [], critic: [], consistency: [], setting: [] });
 const DEFAULT_CONNECTIONS: ConnectionStatus = {
-  openai: { connected: false, state: "disconnected", message: "OpenAI APIは未接続です。", verifiedAt: null },
+  openai: { connected: false, state: "disconnected", storage: "none", message: "OpenAI APIは未接続です。", verifiedAt: null },
   github: { cliInstalled: false, connected: false, state: "unavailable", message: "GitHub CLIの状態をまだ確認していません。" }
 };
 
@@ -425,13 +425,21 @@ export function App(): ReactNode {
     setUserSettings(await window.novelLens.resetKeybindings());
   }, []);
 
-  const openExternalPage = useCallback(async (page: "openai-api-keys" | "github-cli" | "github-applications" | "latest-release"): Promise<void> => {
+  const openExternalPage = useCallback(async (page: "chatgpt" | "openai-api-keys" | "github-cli" | "github-applications" | "latest-release"): Promise<void> => {
     try { await window.novelLens.openExternalPage(page); }
     catch (cause) { setError(errorText(cause)); }
   }, []);
 
-  const openUpdateDownload = useCallback(async (): Promise<void> => {
-    try { await window.novelLens.openUpdateDownload(); }
+  const installUpdate = useCallback(async (): Promise<void> => {
+    try {
+      await saveNow();
+      setUpdateStatus(await window.novelLens.installUpdate());
+    }
+    catch (cause) { setError(errorText(cause)); }
+  }, [saveNow]);
+
+  const openUpdatePage = useCallback(async (): Promise<void> => {
+    try { await window.novelLens.openUpdatePage(); }
     catch (cause) { setError(errorText(cause)); }
   }, []);
 
@@ -466,6 +474,11 @@ export function App(): ReactNode {
     else if (action === "history.checkpoint") void createCheckpoint();
     else if (action === "file.export") void exportProject();
     else if (action === "view.settings") openSettings("general");
+    else if (action === "view.settings.editor") openSettings("editor");
+    else if (action === "view.settings.ai") openSettings("ai");
+    else if (action === "view.settings.accounts") openSettings("accounts");
+    else if (action === "view.settings.keyboard") openSettings("keyboard");
+    else if (action === "view.settings.updates") openSettings("updates");
     else if (action === "view.search") { setSettingsOpen(false); setInspectorTab("search"); }
     else if (action === "view.lens") { setSettingsOpen(false); setInspectorTab("lens"); }
     else if (action === "view.history") { setSettingsOpen(false); setInspectorTab("history"); }
@@ -506,7 +519,8 @@ export function App(): ReactNode {
     onLoginGitHub={loginGitHub}
     onResetKeybindings={resetKeybindings}
     onCheckUpdates={checkUpdates}
-    onOpenUpdate={openUpdateDownload}
+    onInstallUpdate={installUpdate}
+    onOpenUpdatePage={openUpdatePage}
     onOpenExternal={openExternalPage}
   /> : null;
 

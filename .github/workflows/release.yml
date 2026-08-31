@@ -150,7 +150,11 @@ jobs:
         run: |
           cd apps/novel-editor/release
           files=()
-          while IFS= read -r -d '' file; do files+=("$file"); done < <(find . -maxdepth 1 -type f ! -name "*.blockmap" ! -name "latest*.yml" ! -name "SHA256SUMS-*" -print0 | sort -z)
+          while IFS= read -r -d '' file; do files+=("$file"); done < <(find . -maxdepth 1 -type f \( -name "*.exe" -o -name "*.dmg" -o -name "*.zip" -o -name "*.AppImage" -o -name "*.deb" \) -print0 | sort -z)
+          if [[ "${#files[@]}" -eq 0 ]]; then
+            echo "No installer files were produced" >&2
+            exit 1
+          fi
           if command -v sha256sum >/dev/null 2>&1; then
             sha256sum "${files[@]}" > "SHA256SUMS-${{ matrix.platform }}-${{ matrix.arch }}.txt"
           else
@@ -166,7 +170,11 @@ jobs:
         run: |
           cd apps/novel-editor/release
           files=()
-          while IFS= read -r -d '' file; do files+=("$file"); done < <(find . -maxdepth 1 -type f ! -name "*.blockmap" ! -name "latest*.yml" -print0)
+          while IFS= read -r -d '' file; do files+=("$file"); done < <(find . -maxdepth 1 -type f \( -name "*.exe" -o -name "*.dmg" -o -name "*.zip" -o -name "*.AppImage" -o -name "*.deb" -o -name "SHA256SUMS-*" -o -name "THIRD_PARTY_LICENSES-*" \) -print0 | sort -z)
+          if [[ "${#files[@]}" -eq 0 ]]; then
+            echo "No release files were produced" >&2
+            exit 1
+          fi
           for file in "${files[@]}"; do
             uploaded=false
             for attempt in 1 2 3; do

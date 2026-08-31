@@ -3,6 +3,15 @@
   "version": "0.1.0",
   "description": "作者所有のMarkdown原稿、復元可能な履歴、根拠付きAIレンズを備えた日本語小説制作環境",
   "author": "Novel Lens contributors",
+  "homepage": "https://github.com/Hum1Tab/novel-lens",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Hum1Tab/novel-lens.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Hum1Tab/novel-lens/issues"
+  },
+  "desktopName": "novel-lens",
   "private": true,
   "license": "Apache-2.0",
   "type": "module",

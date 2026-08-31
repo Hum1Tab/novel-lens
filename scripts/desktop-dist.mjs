@@ -32,6 +32,11 @@ const forwardedArguments = process.argv.slice(2);
 while (forwardedArguments[0] === "--") {
   forwardedArguments.shift();
 }
+const builderArguments = forwardedArguments.some(
+  (argument) => argument === "--publish" || argument.startsWith("--publish="),
+)
+  ? forwardedArguments
+  : [...forwardedArguments, "--publish", "never"];
 
 const pnpmCli = process.env.npm_execpath;
 const executable = pnpmCli
@@ -75,5 +80,5 @@ await runPnpm([
   "@novel-lens/desktop",
   "exec",
   "electron-builder",
-  ...forwardedArguments,
+  ...builderArguments,
 ]);

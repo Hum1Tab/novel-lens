@@ -115,14 +115,35 @@ jobs:
       - name: Install locked dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Configure optional code signing
+        shell: bash
+        env:
+          CSC_LINK_SECRET: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD_SECRET: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_ID_SECRET: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD_SECRET: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID_SECRET: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          if [[ -n "${CSC_LINK_SECRET}" ]]; then
+            printf 'CSC_LINK=%s\n' "${CSC_LINK_SECRET}" >> "${GITHUB_ENV}"
+            if [[ -n "${CSC_KEY_PASSWORD_SECRET}" ]]; then
+              printf 'CSC_KEY_PASSWORD=%s\n' "${CSC_KEY_PASSWORD_SECRET}" >> "${GITHUB_ENV}"
+            fi
+          else
+            printf 'CSC_IDENTITY_AUTO_DISCOVERY=false\n' >> "${GITHUB_ENV}"
+          fi
+          if [[ -n "${APPLE_ID_SECRET}" ]]; then
+            printf 'APPLE_ID=%s\n' "${APPLE_ID_SECRET}" >> "${GITHUB_ENV}"
+          fi
+          if [[ -n "${APPLE_APP_SPECIFIC_PASSWORD_SECRET}" ]]; then
+            printf 'APPLE_APP_SPECIFIC_PASSWORD=%s\n' "${APPLE_APP_SPECIFIC_PASSWORD_SECRET}" >> "${GITHUB_ENV}"
+          fi
+          if [[ -n "${APPLE_TEAM_ID_SECRET}" ]]; then
+            printf 'APPLE_TEAM_ID=%s\n' "${APPLE_TEAM_ID_SECRET}" >> "${GITHUB_ENV}"
+          fi
+
       - name: Build installer
         run: pnpm desktop:dist -- ${{ matrix.args }}
-        env:
-          CSC_LINK: ${{ secrets.CSC_LINK }}
-          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
 
       - name: Create platform checksum
         shell: bash

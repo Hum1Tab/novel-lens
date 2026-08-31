@@ -36,6 +36,7 @@
   "build": {
     "appId": "org.novellens.desktop",
     "productName": "Novel Lens",
+    "executableName": "novel-lens",
     "asar": true,
     "artifactName": "Novel-Lens-${version}-${os}-${arch}.${ext}",
     "directories": {
@@ -78,6 +79,7 @@
       "target": ["AppImage", "deb"],
       "category": "Office",
       "maintainer": "Novel Lens contributors",
+      "syncDesktopName": true,
       "synopsis": "Local-first Japanese novel writing environment"
     }
   }

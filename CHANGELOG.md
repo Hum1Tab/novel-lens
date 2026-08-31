@@ -2,6 +2,15 @@
 
 All notable changes to Novel Lens are documented here.
 
+## 0.1.1 - 2026-09-01
+
+### Fixed
+
+- Restored the visible, clickable primary action on the welcome screen.
+- Replaced unsupported Electron `window.prompt()` calls with an in-app text dialog.
+- Made existing projects open through their visible `novel-lens.json` file instead of an empty-looking directory-only picker.
+- Kept welcome actions reachable at small window sizes and high display scaling.
+
 ## 0.1.0 - 2026-08-31
 
 ### Added

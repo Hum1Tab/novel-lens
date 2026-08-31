@@ -19,6 +19,16 @@ type InspectorTab = "lens" | "search" | "history" | "settings";
 type SaveState = "saved" | "dirty" | "saving" | "error";
 type ScopeMode = "current" | "through-current" | "all";
 
+interface TextPromptRequest {
+  id: number;
+  title: string;
+  label: string;
+  initialValue: string;
+  confirmLabel: string;
+}
+
+type TextPromptOptions = Omit<TextPromptRequest, "id">;
+
 const ROLE_IDS = Object.keys(ROLE_REGISTRY) as RoleId[];
 const DEFAULT_QUERY = "この範囲で、作者が見直す価値のある箇所を根拠付きで教えてください。";
 const EMPTY_THREADS = (): Record<RoleId, LensMessage[]> => ({ "first-reader": [], editor: [], critic: [], consistency: [], setting: [] });
@@ -64,7 +74,29 @@ export function App(): ReactNode {
   const [threads, setThreads] = useState<Record<RoleId, LensMessage[]>>(EMPTY_THREADS);
   const [lensResult, setLensResult] = useState<LensRunResult | null>(null);
   const [lensBusy, setLensBusy] = useState(false);
+  const [textPrompt, setTextPrompt] = useState<TextPromptRequest | null>(null);
   const editorRef = useRef<HTMLTextAreaElement>(null);
+  const promptResolverRef = useRef<((value: string | null) => void) | null>(null);
+  const promptSequenceRef = useRef(0);
+
+  const requestText = useCallback((options: TextPromptOptions): Promise<string | null> => {
+    promptResolverRef.current?.(null);
+    promptSequenceRef.current += 1;
+    setTextPrompt({ id: promptSequenceRef.current, ...options });
+    return new Promise((resolve) => { promptResolverRef.current = resolve; });
+  }, []);
+
+  const finishTextPrompt = useCallback((value: string | null): void => {
+    const resolvePrompt = promptResolverRef.current;
+    promptResolverRef.current = null;
+    setTextPrompt(null);
+    resolvePrompt?.(value);
+  }, []);
+
+  useEffect(() => () => {
+    promptResolverRef.current?.(null);
+    promptResolverRef.current = null;
+  }, []);
 
   useEffect(() => { void window.novelLens.appInfo().then(setAppInfo).catch(() => undefined); }, []);
 
@@ -157,13 +189,18 @@ export function App(): ReactNode {
   }, []);
 
   const createProject = useCallback(async (): Promise<void> => {
-    const title = window.prompt("作品名を入力してください", "新しい小説");
+    const title = await requestText({
+      title: "新しい作品を作る",
+      label: "作品名",
+      initialValue: "新しい小説",
+      confirmLabel: "保存場所を選ぶ"
+    });
     if (title === null || title.trim().length === 0) return;
     await saveNow(); clearMessages(); setBusy(true);
     try { await adoptProject(await window.novelLens.createProject(title.trim())); }
     catch (cause) { setError(errorText(cause)); }
     finally { setBusy(false); }
-  }, [adoptProject, clearMessages, saveNow]);
+  }, [adoptProject, clearMessages, requestText, saveNow]);
 
   const openProject = useCallback(async (): Promise<void> => {
     await saveNow(); clearMessages(); setBusy(true);
@@ -187,11 +224,16 @@ export function App(): ReactNode {
 
   const addChapter = useCallback(async (): Promise<void> => {
     if (project === null) return;
-    const title = window.prompt("章・場面のタイトル", `第${manifestChapters.length + 1}章`);
+    const title = await requestText({
+      title: "章・場面を追加",
+      label: "タイトル",
+      initialValue: `第${manifestChapters.length + 1}章`,
+      confirmLabel: "追加する"
+    });
     if (title === null || title.trim().length === 0) return;
     try { await saveNow(); const created = await window.novelLens.createChapter(project.root, title.trim()); await refreshProject(); await loadChapter(created.id); }
     catch (cause) { setError(errorText(cause)); }
-  }, [loadChapter, manifestChapters.length, project, refreshProject, saveNow]);
+  }, [loadChapter, manifestChapters.length, project, refreshProject, requestText, saveNow]);
 
   const importDocuments = useCallback(async (): Promise<void> => {
     if (project === null) return;
@@ -220,19 +262,29 @@ export function App(): ReactNode {
 
   const renameProject = useCallback(async (): Promise<void> => {
     if (project === null) return;
-    const title = window.prompt("作品名", project.manifest.title);
+    const title = await requestText({
+      title: "作品名を変更",
+      label: "作品名",
+      initialValue: project.manifest.title,
+      confirmLabel: "変更する"
+    });
     if (title === null || title.trim().length === 0 || title.trim() === project.manifest.title) return;
     try { setProject(await window.novelLens.renameProject(project.root, title.trim())); }
     catch (cause) { setError(errorText(cause)); }
-  }, [project]);
+  }, [project, requestText]);
 
   const renameChapter = useCallback(async (): Promise<void> => {
     if (project === null || chapter === null) return;
-    const title = window.prompt("新しいタイトル", chapter.chapter.title);
+    const title = await requestText({
+      title: "章・場面の名前を変更",
+      label: "タイトル",
+      initialValue: chapter.chapter.title,
+      confirmLabel: "変更する"
+    });
     if (title === null || title.trim().length === 0 || title.trim() === chapter.chapter.title) return;
     try { await window.novelLens.renameChapter(project.root, chapter.chapter.id, title.trim()); const refreshed = await refreshProject(); const found = refreshed?.manifest.chapters.find((item) => item.id === chapter.chapter.id); if (found !== undefined) setChapter({ ...chapter, chapter: found }); }
     catch (cause) { setError(errorText(cause)); }
-  }, [chapter, project, refreshProject]);
+  }, [chapter, project, refreshProject, requestText]);
 
   const deleteChapter = useCallback(async (): Promise<void> => {
     if (project === null || chapter === null) return;
@@ -265,11 +317,16 @@ export function App(): ReactNode {
 
   const createCheckpoint = useCallback(async (): Promise<void> => {
     if (project === null) return;
-    const subject = window.prompt("保存点の名前", "ここまでの改稿");
+    const subject = await requestText({
+      title: "保存点を作る",
+      label: "保存点の名前",
+      initialValue: "ここまでの改稿",
+      confirmLabel: "保存点を作る"
+    });
     if (subject === null || subject.trim().length === 0) return;
     try { await saveNow(); await window.novelLens.createCheckpoint(project.root, subject.trim()); await loadCheckpoints(); setNotice("保存点を作成しました。"); }
     catch (cause) { setError(errorText(cause)); }
-  }, [loadCheckpoints, project, saveNow]);
+  }, [loadCheckpoints, project, requestText, saveNow]);
 
   const restoreCheckpoint = useCallback(async (entry: CheckpointEntry): Promise<void> => {
     if (project === null || !window.confirm(`保存点「${entry.subject}」へ戻します。現在の状態は復元前の保存点として残します。`)) return;
@@ -340,9 +397,19 @@ export function App(): ReactNode {
     "--editor-font-size": `${editorFontSize}px`
   } as CSSProperties;
 
-  if (project === null) return <Welcome appInfo={appInfo} busy={busy} error={error} onCreate={createProject} onOpen={openProject} />;
+  const promptDialog = textPrompt === null ? null : <TextPrompt
+    key={textPrompt.id}
+    request={textPrompt}
+    onCancel={() => finishTextPrompt(null)}
+    onSubmit={(value) => finishTextPrompt(value)}
+  />;
 
-  return <div className={`app theme-${theme}`} style={editorStyle}>
+  if (project === null) return <>
+    <Welcome appInfo={appInfo} busy={busy} error={error} onCreate={createProject} onOpen={openProject} />
+    {promptDialog}
+  </>;
+
+  return <><div className={`app theme-${theme}`} style={editorStyle}>
     <header className="topbar">
       <div className="brand"><span className="brand-mark">NL</span><div><b>Novel Lens</b><button className="project-title" onClick={renameProject} title="作品名を変更">{project.manifest.title}</button></div></div>
       <div className="top-actions">
@@ -404,6 +471,26 @@ export function App(): ReactNode {
         {inspectorTab === "settings" && <SettingsPanel settings={settings} onUpdate={updateSettings} />}
       </aside>
     </div>
+  </div>{promptDialog}</>;
+}
+
+function TextPrompt({ request, onCancel, onSubmit }: { request: TextPromptRequest; onCancel: () => void; onSubmit: (value: string) => void }): ReactNode {
+  const [value, setValue] = useState(request.initialValue);
+
+  return <div className="prompt-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onCancel(); }}>
+    <form
+      className="prompt-dialog"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby={`prompt-title-${request.id}`}
+      onKeyDown={(event) => { if (event.key === "Escape") onCancel(); }}
+      onSubmit={(event) => { event.preventDefault(); if (value.trim().length > 0) onSubmit(value.trim()); }}
+    >
+      <span className="eyebrow">NOVEL LENS</span>
+      <h2 id={`prompt-title-${request.id}`}>{request.title}</h2>
+      <label>{request.label}<input autoFocus maxLength={200} value={value} onFocus={(event) => event.currentTarget.select()} onChange={(event) => setValue(event.target.value)} /></label>
+      <div className="prompt-actions"><button type="button" className="secondary" onClick={onCancel}>キャンセル</button><button type="submit" className="primary" disabled={value.trim().length === 0}>{request.confirmLabel}</button></div>
+    </form>
   </div>;
 }
 
@@ -416,6 +503,7 @@ function Welcome({ appInfo, busy, error, onCreate, onOpen }: { appInfo: AppInfo 
       <p className="welcome-copy">原稿はあなたのフォルダーにMarkdownで保存されます。AIは任意で、送信する章を毎回確認できます。</p>
       {error !== null && <p className="welcome-error">{error}</p>}
       <div className="welcome-actions"><button className="primary" disabled={busy} onClick={onCreate}>新しい作品を作る</button><button className="secondary" disabled={busy} onClick={onOpen}>作品フォルダーを開く</button></div>
+      <p className="welcome-open-help">既存作品を開くときは、作品フォルダー内の <code>novel-lens.json</code> を選びます。</p>
       <div className="welcome-features"><span>縦書き・横書き</span><span>自動保存と保存点</span><span>根拠付きAIレンズ</span></div>
       <small>Novel Lens {appInfo?.version ?? ""} · {appInfo?.platform ?? "desktop"}</small>
     </div>

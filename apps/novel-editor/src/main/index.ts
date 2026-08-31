@@ -16,6 +16,11 @@ const allowedRoots = new Set<string>();
 let mainWindow: BrowserWindow | null = null;
 let closeApproved = false;
 let closeFallback: ReturnType<typeof setTimeout> | null = null;
+const PROJECT_MANIFEST = "novel-lens.json";
+
+function suggestedFolderName(title: string): string {
+  return title.replace(/[<>:"/\\|?*\u0000-\u001F]/gu, "-").replace(/[. ]+$/u, "").trim() || "新しい小説";
+}
 
 function safeMessage(error: unknown): string {
   if (!(error instanceof Error)) return "処理を完了できませんでした。";
@@ -56,9 +61,10 @@ async function summary(store: ProjectStore): Promise<ProjectSummary> {
 async function chooseNewProject(title: unknown): Promise<ProjectSummary | null> {
   if (typeof title !== "string" || title.trim().length === 0 || title.length > 200) throw new Error("作品名は1〜200文字で入力してください。");
   const selected = await dialog.showSaveDialog(mainWindow!, {
-    title: "新しいNovel Lens projectを作成",
-    defaultPath: title.trim(),
-    buttonLabel: "この場所に作成",
+    title: "新しい作品フォルダーの保存場所を選択",
+    defaultPath: join(app.getPath("documents"), suggestedFolderName(title.trim())),
+    buttonLabel: "ここに作品を作成",
+    nameFieldLabel: "作品フォルダー名:",
     properties: ["createDirectory", "showOverwriteConfirmation"]
   });
   if (selected.canceled || selected.filePath.length === 0) return null;
@@ -78,13 +84,16 @@ async function chooseNewProject(title: unknown): Promise<ProjectSummary | null> 
 
 async function chooseExistingProject(): Promise<ProjectSummary | null> {
   const selected = await dialog.showOpenDialog(mainWindow!, {
-    title: "Novel Lens projectを開く",
-    buttonLabel: "開く",
-    properties: ["openDirectory"]
+    title: `作品フォルダー内の ${PROJECT_MANIFEST} を選択`,
+    defaultPath: app.getPath("documents"),
+    buttonLabel: "この作品を開く",
+    filters: [{ name: `Novel Lens作品 (${PROJECT_MANIFEST})`, extensions: ["json"] }],
+    properties: ["openFile"]
   });
   const selectedPath = selected.filePaths[0];
   if (selected.canceled || selectedPath === undefined) return null;
-  const root = await registerRoot(selectedPath);
+  if (basename(selectedPath) !== PROJECT_MANIFEST) throw new Error(`作品フォルダー内の ${PROJECT_MANIFEST} を選択してください。`);
+  const root = await registerRoot(dirname(selectedPath));
   const store = new ProjectStore(root);
   await store.open();
   return summary(store);

@@ -1,10 +1,14 @@
 import { contextBridge, ipcRenderer } from "electron";
-import type { NovelLensApi } from "../shared/types.js";
+import type { AppCommandId, ConnectionStatus, NovelLensApi, UpdateStatus } from "../shared/types.js";
 
 const invoke = <T>(channel: string, ...args: unknown[]): Promise<T> => ipcRenderer.invoke(channel, ...args) as Promise<T>;
 
 const api: NovelLensApi = {
   appInfo: () => invoke("app:info"),
+  getUserSettings: () => invoke("user-settings:get"),
+  updateUserSettings: (patch) => invoke("user-settings:update", patch),
+  resetKeybindings: () => invoke("user-settings:reset-keybindings"),
+  setKeybindingRecording: (active) => invoke("user-settings:keybinding-recording", active),
   createProject: (title) => invoke("project:create", title),
   openProject: () => invoke("project:open"),
   refreshProject: (root) => invoke("project:refresh", root),
@@ -17,6 +21,7 @@ const api: NovelLensApi = {
   renameProject: (root, title) => invoke("project:rename", root, title),
   deleteChapter: (root, chapterId) => invoke("chapter:delete", root, chapterId),
   updateSettings: (root, settings) => invoke("project:settings", root, settings),
+  resetProjectSetting: (root, key) => invoke("project:settings-reset", root, key),
   search: (root, query) => invoke("project:search", root, query),
   createCheckpoint: (root, subject) => invoke("history:checkpoint", root, subject),
   listCheckpoints: (root) => invoke("history:list", root),
@@ -24,10 +29,27 @@ const api: NovelLensApi = {
   createVariation: (root) => invoke("project:variation", root),
   exportMarkdown: (root) => invoke("project:export", root),
   runLens: (input) => invoke("lens:run", input),
+  connectionStatus: () => invoke("connections:status"),
+  connectOpenAI: (apiKey) => invoke("connections:openai-connect", apiKey),
+  disconnectOpenAI: () => invoke("connections:openai-disconnect"),
+  loginGitHub: () => invoke("connections:github-login"),
+  checkForUpdates: () => invoke("updates:check"),
+  openUpdateDownload: () => invoke("updates:open-download"),
+  openExternalPage: (page) => invoke("app:open-external", page),
   onMenuAction: (listener) => {
-    const handler = (_event: Electron.IpcRendererEvent, action: "new" | "open" | "save" | "checkpoint" | "export") => listener(action);
+    const handler = (_event: Electron.IpcRendererEvent, action: AppCommandId) => listener(action);
     ipcRenderer.on("menu:action", handler);
     return () => ipcRenderer.removeListener("menu:action", handler);
+  },
+  onConnectionStatus: (listener) => {
+    const handler = (_event: Electron.IpcRendererEvent, status: ConnectionStatus) => listener(status);
+    ipcRenderer.on("connections:status", handler);
+    return () => ipcRenderer.removeListener("connections:status", handler);
+  },
+  onUpdateStatus: (listener) => {
+    const handler = (_event: Electron.IpcRendererEvent, status: UpdateStatus) => listener(status);
+    ipcRenderer.on("updates:status", handler);
+    return () => ipcRenderer.removeListener("updates:status", handler);
   },
   onBeforeClose: (listener) => {
     const handler = () => { void Promise.resolve(listener()).catch(() => undefined).finally(() => ipcRenderer.send("app:close-ready")); };

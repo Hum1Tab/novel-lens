@@ -1,7 +1,7 @@
 # Desktop implementation status
 
 更新日: 2026-08-31  
-対象: Novel Lens desktop v0.1.0
+対象: Novel Lens desktop v0.2.0
 
 ## 実装済み
 
@@ -16,6 +16,10 @@
 - Windows NSIS / portable、macOS DMG / ZIP、Linux AppImage / debのelectron-builder設定
 - tag起動のGitHub Release workflow、draft→OS matrix upload→全成功後publish、platform別SHA-256
 - Apache-2.0、SECURITY、CONTRIBUTING、Code of Conduct、install/release guide
+- VS Code型の独立設定画面、検索可能なカテゴリ、ユーザー／作品スコープ
+- atomicなユーザー設定、変更可能なキーバインド、native menuへの即時反映
+- session-only OpenAI API接続確認、GitHub CLI browser loginとtoken非保持status
+- public GitHub Releasesによる起動時／手動update checkとOS別installer案内
 
 ## Release前に外部状態として必要
 

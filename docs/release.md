@@ -17,7 +17,7 @@ git push origin v0.1.0
 `Desktop release` workflowは次を行う。
 
 1. tagとdesktop package versionの一致を検査
-2. 型検査、25件の回帰試験、high以上のproduction advisory検査
+2. 型検査、必要な回帰試験、high以上のproduction advisory検査
 3. draft GitHub Releaseを一度だけ作成
 4. Windows x64、macOS Intel、macOS Apple Silicon、Linux x64を各native runnerでbuild
 5. installer、platform別SHA-256、production dependency license一覧をdraftへ直接upload

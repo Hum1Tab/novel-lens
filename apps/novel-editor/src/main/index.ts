@@ -3,10 +3,14 @@ import { mkdir, readFile, readdir, realpath, writeFile } from "node:fs/promises"
 import { basename, dirname, extname, join, resolve } from "node:path";
 
 import { ProjectStore, type ProjectSettings } from "@novel-lens/project-store";
-import { app, BrowserWindow, dialog, ipcMain, Menu, session, type MenuItemConstructorOptions } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu, session, shell, type MenuItemConstructorOptions } from "electron";
 
+import { COMMAND_DEFINITIONS, defaultUserSettings, toElectronAccelerator, type AppCommandId, type UserSettings } from "../shared/settings.js";
 import { runLens } from "./lens.js";
 import type { ChapterDocument, LensRunInput, ProjectSummary } from "../shared/types.js";
+import { ConnectionManager } from "./connections.js";
+import { LATEST_RELEASE_PAGE, UpdateManager } from "./updates.js";
+import { UserSettingsStore } from "./user-settings.js";
 
 // The editor does not use GPU-heavy features. Software rendering avoids startup
 // failures on Windows systems whose graphics runtime is incomplete or blocked.
@@ -16,7 +20,18 @@ const allowedRoots = new Set<string>();
 let mainWindow: BrowserWindow | null = null;
 let closeApproved = false;
 let closeFallback: ReturnType<typeof setTimeout> | null = null;
+let settingsStore: UserSettingsStore | null = null;
+let userSettings = defaultUserSettings();
+let keybindingRecording = false;
+let updateManager: UpdateManager | null = null;
+const connections = new ConnectionManager((status) => mainWindow?.webContents.send("connections:status", status));
 const PROJECT_MANIFEST = "novel-lens.json";
+const EXTERNAL_PAGES = {
+  "openai-api-keys": "https://platform.openai.com/api-keys",
+  "github-cli": "https://cli.github.com/",
+  "github-applications": "https://github.com/settings/applications",
+  "latest-release": LATEST_RELEASE_PAGE
+} as const;
 
 function suggestedFolderName(title: string): string {
   return title.replace(/[<>:"/\\|?*\u0000-\u001F]/gu, "-").replace(/[. ]+$/u, "").trim() || "新しい小説";
@@ -39,6 +54,16 @@ function handle(channel: string, listener: (...args: any[]) => unknown | Promise
     try { return await listener(...args); }
     catch (error) { throw new Error(safeMessage(error)); }
   });
+}
+
+function requireSettingsStore(): UserSettingsStore {
+  if (settingsStore === null) throw new Error("設定をまだ読み込めません。");
+  return settingsStore;
+}
+
+async function openExternalPage(page: unknown): Promise<void> {
+  if (typeof page !== "string" || !(page in EXTERNAL_PAGES)) throw new Error("外部ページを開けません。");
+  await shell.openExternal(EXTERNAL_PAGES[page as keyof typeof EXTERNAL_PAGES], { activate: true });
 }
 
 async function registerRoot(root: string): Promise<string> {
@@ -101,6 +126,23 @@ async function chooseExistingProject(): Promise<ProjectSummary | null> {
 
 function registerIpc(): void {
   handle("app:info", () => ({ name: app.getName(), version: app.getVersion(), platform: process.platform }));
+  handle("user-settings:get", () => requireSettingsStore().current());
+  handle("user-settings:update", async (patch) => {
+    if (typeof patch !== "object" || patch === null || Array.isArray(patch)) throw new Error("ユーザー設定を確認してください。");
+    userSettings = await requireSettingsStore().update(patch);
+    installMenu();
+    return userSettings;
+  });
+  handle("user-settings:reset-keybindings", async () => {
+    userSettings = await requireSettingsStore().resetKeybindings();
+    installMenu();
+    return userSettings;
+  });
+  handle("user-settings:keybinding-recording", (active) => {
+    if (typeof active !== "boolean") throw new Error("キー入力状態を確認できません。");
+    keybindingRecording = active;
+    installMenu();
+  });
   handle("project:create", chooseNewProject);
   handle("project:open", chooseExistingProject);
   handle("project:refresh", async (root) => summary(await storeFor(root)));
@@ -179,6 +221,13 @@ function registerIpc(): void {
     await store.updateSettings(safeSettings);
     return summary(store);
   });
+  handle("project:settings-reset", async (root, key) => {
+    const allowed = new Set(["writingMode", "theme", "font", "fontSize", "lineHeight", "width"]);
+    if (typeof key !== "string" || !allowed.has(key)) throw new Error("設定項目を確認してください。");
+    const store = await storeFor(root);
+    await store.resetSetting(key as "writingMode" | "theme" | "font" | "fontSize" | "lineHeight" | "width");
+    return summary(store);
+  });
   handle("project:search", async (root, query) => {
     if (typeof query !== "string" || query.trim().length === 0 || query.length > 500) return [];
     return (await (await storeFor(root)).search(query)).map(({ chapterId, title, start, end, excerpt }) => ({ chapterId, title, start, end, excerpt }));
@@ -221,7 +270,32 @@ function registerIpc(): void {
     await writeFile(selected.filePath, await store.exportMarkdown(), "utf8");
     return selected.filePath;
   });
-  handle("lens:run", async (input) => runLens(input as LensRunInput));
+  handle("lens:run", async (input) => {
+    if (typeof input !== "object" || input === null) throw new Error("AI requestを確認してください。");
+    const request = { ...(input as LensRunInput) };
+    delete request.apiKey;
+    if (request.provider === "openai") request.apiKey = connections.requireOpenAIKey();
+    return runLens(request);
+  });
+  handle("connections:status", () => connections.refreshStatus());
+  handle("connections:openai-connect", (apiKey) => {
+    if (typeof apiKey !== "string") throw new Error("OpenAI APIキーを確認してください。");
+    return connections.connectOpenAI(apiKey);
+  });
+  handle("connections:openai-disconnect", () => connections.disconnectOpenAI());
+  handle("connections:github-login", () => connections.loginGitHub());
+  handle("updates:check", () => {
+    if (updateManager === null) throw new Error("更新機能をまだ利用できません。");
+    return updateManager.check();
+  });
+  handle("updates:open-download", async () => {
+    const status = updateManager?.snapshot();
+    const target = status?.downloadUrl ?? status?.releaseUrl ?? LATEST_RELEASE_PAGE;
+    const url = new URL(target);
+    if (url.protocol !== "https:" || url.hostname !== "github.com" || !url.pathname.startsWith("/Hum1Tab/novel-lens/releases/")) throw new Error("更新先URLを確認できません。");
+    await shell.openExternal(url.toString(), { activate: true });
+  });
+  handle("app:open-external", openExternalPage);
   ipcMain.on("app:close-ready", (event) => {
     if (mainWindow === null || event.sender !== mainWindow.webContents) return;
     closeApproved = true;
@@ -230,8 +304,14 @@ function registerIpc(): void {
   });
 }
 
-function sendMenuAction(action: "new" | "open" | "save" | "checkpoint" | "export"): void {
+function sendMenuAction(action: AppCommandId): void {
   mainWindow?.webContents.send("menu:action", action);
+}
+
+function commandMenuItem(id: AppCommandId, label?: string): MenuItemConstructorOptions {
+  const definition = COMMAND_DEFINITIONS.find((item) => item.id === id)!;
+  const accelerator = keybindingRecording ? undefined : toElectronAccelerator(userSettings.keybindings[id]);
+  return { label: label ?? definition.label, click: () => sendMenuAction(id), ...(accelerator === undefined ? {} : { accelerator }) };
 }
 
 function installMenu(): void {
@@ -239,18 +319,19 @@ function installMenu(): void {
     {
       label: "ファイル",
       submenu: [
-        { label: "新しい作品", accelerator: "CmdOrCtrl+N", click: () => sendMenuAction("new") },
-        { label: "作品を開く", accelerator: "CmdOrCtrl+O", click: () => sendMenuAction("open") },
+        commandMenuItem("file.new"),
+        commandMenuItem("file.open"),
         { type: "separator" },
-        { label: "保存", accelerator: "CmdOrCtrl+S", click: () => sendMenuAction("save") },
-        { label: "保存点を作る", accelerator: "CmdOrCtrl+Shift+S", click: () => sendMenuAction("checkpoint") },
-        { label: "Markdownを書き出す", click: () => sendMenuAction("export") },
+        commandMenuItem("file.save"),
+        commandMenuItem("history.checkpoint"),
+        commandMenuItem("file.export"),
         { type: "separator" },
         { role: process.platform === "darwin" ? "close" : "quit" }
       ]
     },
     { label: "編集", submenu: [{ role: "undo" }, { role: "redo" }, { type: "separator" }, { role: "cut" }, { role: "copy" }, { role: "paste" }, { role: "selectAll" }] },
-    { label: "表示", submenu: [{ role: "reload" }, { role: "togglefullscreen" }, { type: "separator" }, { role: "resetZoom" }, { role: "zoomIn" }, { role: "zoomOut" }] }
+    { label: "表示", submenu: [commandMenuItem("view.lens"), commandMenuItem("view.search"), commandMenuItem("view.history"), { type: "separator" }, commandMenuItem("view.settings"), { type: "separator" }, { role: "togglefullscreen" }, { role: "resetZoom" }, { role: "zoomIn" }, { role: "zoomOut" }] },
+    { label: "ヘルプ", submenu: [commandMenuItem("updates.check"), { label: "GitHub Releasesを開く", click: () => { void openExternalPage("latest-release"); } }] }
   ];
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
@@ -300,10 +381,15 @@ else {
     app.setAppUserModelId("org.novellens.desktop");
     session.defaultSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
     session.defaultSession.setPermissionCheckHandler(() => false);
+    settingsStore = new UserSettingsStore(join(app.getPath("userData"), "settings.json"));
+    userSettings = await settingsStore.load();
+    updateManager = new UpdateManager(app.getVersion(), process.platform, process.arch, (status) => mainWindow?.webContents.send("updates:status", status));
     registerIpc();
     installMenu();
     await createWindow();
+    if (app.isPackaged && userSettings.updates.checkOnStartup) setTimeout(() => { void updateManager?.check(); }, 3000);
     app.on("activate", () => { if (BrowserWindow.getAllWindows().length === 0) void createWindow(); });
   });
+  app.on("before-quit", () => connections.clear());
   app.on("window-all-closed", () => { if (process.platform !== "darwin") app.quit(); });
 }

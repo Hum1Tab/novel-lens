@@ -37,6 +37,12 @@ shasum -a 256 Novel-Lens-*
 
 表示値をRelease添付の`SHA256SUMS-<platform>-<arch>.txt`と比較します。
 
+## アプリ内更新
+
+「設定 → 更新 → 今すぐ確認」は、tokenなしで公開GitHub Releasesへ接続し、現在のversionと最新版を比較する。新しいversionがある場合は現在のOS・CPU用installerを開く。packaged版では「起動時に確認」を有効にすると、起動後に1回だけ同じ確認を行う。原稿、作品名、設定、GitHub認証は送信しない。
+
+macOSの完全自動更新はcode signingが必須であり、Linuxはpackage managerとの整合も必要になるため、v0.2では全OS共通で「最新版確認と正しいinstallerへの案内」までを安全な共通動作とする。
+
 ## 原稿データとuninstall
 
 作品は利用者が選んだフォルダーに`novel-lens.json`と`manuscript/*.md`として保存され、アプリのuninstallでは削除されません。必要な作品フォルダーをbackupしてからOSの通常手順でアプリを削除してください。APIキーとAI会話はdisk保存しません。

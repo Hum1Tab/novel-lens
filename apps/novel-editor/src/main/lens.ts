@@ -67,6 +67,7 @@ function extractOutputText(body: ResponseBody): string {
 
 function validateInput(input: LensRunInput): void {
   getRole(input.role);
+  if (input.provider !== "mock" && input.provider !== "openai") throw new Error("AI接続を確認してください。");
   if (input.query.trim().length === 0 || input.query.length > 4000) throw new Error("質問は1〜4000文字で入力してください。");
   if (input.chapters.length === 0 || input.chapters.length > 200) throw new Error("AIへ渡す章を1〜200件で選んでください。");
   const totalChars = input.chapters.reduce((sum, chapter) => sum + chapter.text.length, 0);

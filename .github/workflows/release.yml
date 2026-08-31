@@ -1,0 +1,161 @@
+name: Desktop release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing v*.*.* tag to release"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.17.0
+      - name: Activate pinned pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@11.19.0 --activate
+      - name: Install locked dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Match package version to tag
+        shell: bash
+        run: |
+          version="$(node -p "require('./apps/novel-editor/package.json').version")"
+          test "v${version}" = "${RELEASE_TAG}"
+      - name: Typecheck and focused regression tests
+        run: pnpm typecheck && pnpm test
+      - name: Reject high production advisories
+        run: pnpm audit --prod --audit-level high
+
+  prepare:
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Validate release tag
+        shell: bash
+        run: |
+          if [[ ! "${RELEASE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Release tag must match v*.*.*" >&2
+            exit 1
+          fi
+      - name: Create draft release once
+        shell: bash
+        run: |
+          if ! gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            gh release create "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" --draft --generate-notes --verify-tag \
+              --notes "署名状態: この初期Releaseは未署名です。OSの警告を確認し、添付のSHA256SUMSでdownloadを検証してください。"
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+  build:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            platform: windows
+            arch: x64
+            args: "--win --x64"
+          - runner: macos-15-intel
+            platform: macos
+            arch: x64
+            args: "--mac --x64"
+          - runner: macos-latest
+            platform: macos
+            arch: arm64
+            args: "--mac --arm64"
+          - runner: ubuntu-latest
+            platform: linux
+            arch: x64
+            args: "--linux --x64"
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 35
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.17.0
+
+      - name: Activate pinned pnpm
+        shell: bash
+        run: |
+          corepack enable
+          corepack prepare pnpm@11.19.0 --activate
+
+      - name: Install locked dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build installer
+        run: pnpm desktop:dist -- ${{ matrix.args }}
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+
+      - name: Create platform checksum
+        shell: bash
+        run: |
+          cd apps/novel-editor/release
+          files=()
+          while IFS= read -r -d '' file; do files+=("$file"); done < <(find . -maxdepth 1 -type f ! -name "*.blockmap" ! -name "latest*.yml" ! -name "SHA256SUMS-*" -print0 | sort -z)
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "${files[@]}" > "SHA256SUMS-${{ matrix.platform }}-${{ matrix.arch }}.txt"
+          else
+            shasum -a 256 "${files[@]}" > "SHA256SUMS-${{ matrix.platform }}-${{ matrix.arch }}.txt"
+          fi
+
+      - name: Record production dependency licenses
+        shell: bash
+        run: pnpm licenses list --prod --json > "apps/novel-editor/release/THIRD_PARTY_LICENSES-${{ matrix.platform }}-${{ matrix.arch }}.json"
+
+      - name: Upload installers to draft release
+        shell: bash
+        run: |
+          cd apps/novel-editor/release
+          files=()
+          while IFS= read -r -d '' file; do files+=("$file"); done < <(find . -maxdepth 1 -type f ! -name "*.blockmap" ! -name "latest*.yml" -print0)
+          gh release upload "${RELEASE_TAG}" "${files[@]}" --repo "${GITHUB_REPOSITORY}" --clobber
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Publish completed release
+        run: gh release edit "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" --draft=false --latest
+        env:
+          GH_TOKEN: ${{ github.token }}

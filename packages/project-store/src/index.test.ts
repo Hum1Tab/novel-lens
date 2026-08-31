@@ -1,0 +1,5 @@
+import { mkdtemp, readFile } from "node:fs/promises"; import { tmpdir } from "node:os"; import { join } from "node:path"; import { describe, expect, it } from "vitest"; import { ProjectStore } from "./index.js";
+describe("ProjectStore", () => {
+  it("creates, edits, searches and exports a markdown project", async () => { const d = await mkdtemp(join(tmpdir(), "novel-")); const s = await ProjectStore.create(d, "Test"); const c = await s.createChapter("One", "hello world"); await s.saveChapter(c.id, "hello revised"); expect((await s.search("revised")).length).toBe(1); expect(await s.exportMarkdown()).toContain("# One"); expect(JSON.parse(await readFile(join(d, "novel-lens.json"), "utf8")).settings).toEqual({}); });
+  it("checkpoints and restores without git", async () => { const d = await mkdtemp(join(tmpdir(), "novel-")); const s = await ProjectStore.create(d, "Test"); const c = await s.createChapter("One", "before"); const cp = await s.checkpoint("initial"); await s.saveChapter(c.id, "after"); await s.restore(cp.commit!); expect(await s.readChapter(c.id)).toBe("before"); expect((await s.history()).length).toBe(2); });
+});

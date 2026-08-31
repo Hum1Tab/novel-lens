@@ -66,7 +66,7 @@ jobs:
         run: |
           if ! gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
             gh release create "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" --draft --generate-notes --verify-tag \
-              --notes "署名状態: この初期Releaseは未署名です。OSの警告を確認し、添付のSHA256SUMSでdownloadを検証してください。"
+              --notes "署名状態: このReleaseは未署名です。OSの警告を確認し、添付のSHA256SUMSでdownloadを検証してください。"
           fi
         env:
           GH_TOKEN: ${{ github.token }}

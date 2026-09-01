@@ -6,6 +6,7 @@ import {
   defaultUserSettings,
   mergeUserSettings,
   sanitizeUserSettings,
+  serializeUserSettings,
   validateKeybindings,
   type UserSettings,
   type UserSettingsPatch
@@ -47,13 +48,13 @@ export class UserSettingsStore {
     const bindings = { ...this.value.keybindings, ...patch.keybindings };
     validateKeybindings(bindings);
     this.value = mergeUserSettings(this.value, patch);
-    await atomicWrite(this.filePath, `${JSON.stringify(this.value, null, 2)}\n`);
+    await atomicWrite(this.filePath, serializeUserSettings(this.value));
     return this.current();
   }
 
   async resetKeybindings(): Promise<UserSettings> {
     this.value = { ...this.value, keybindings: defaultKeybindings() };
-    await atomicWrite(this.filePath, `${JSON.stringify(this.value, null, 2)}\n`);
+    await atomicWrite(this.filePath, serializeUserSettings(this.value));
     return this.current();
   }
 }

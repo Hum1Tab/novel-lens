@@ -3,7 +3,7 @@ import { chmod, mkdir, readFile, readdir, realpath, writeFile } from "node:fs/pr
 import { basename, dirname, extname, join, resolve } from "node:path";
 
 import { ProjectStore, type ProjectSettings } from "@novel-lens/project-store";
-import { app, BrowserWindow, dialog, ipcMain, Menu, session, shell, type MenuItemConstructorOptions } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, session, shell, type MenuItemConstructorOptions } from "electron";
 
 import { COMMAND_DEFINITIONS, defaultUserSettings, toElectronAccelerator, type AppCommandId, type UserSettings } from "../shared/settings.js";
 import { runLens, type LensExecutionInput } from "./lens.js";
@@ -132,6 +132,8 @@ function registerIpc(): void {
   handle("user-settings:update", async (patch) => {
     if (typeof patch !== "object" || patch === null || Array.isArray(patch)) throw new Error("ユーザー設定を確認してください。");
     userSettings = await requireSettingsStore().update(patch);
+    const dark = userSettings.appearance.colorTheme === "dark" || (userSettings.appearance.colorTheme === "system" && nativeTheme.shouldUseDarkColors);
+    mainWindow?.setBackgroundColor(dark ? "#15201c" : "#eee9df");
     installMenu();
     return userSettings;
   });
@@ -352,7 +354,7 @@ function installMenu(): void {
     },
     { label: "編集", submenu: [{ role: "undo" }, { role: "redo" }, { type: "separator" }, { role: "cut" }, { role: "copy" }, { role: "paste" }, { role: "selectAll" }] },
     { label: "設定", submenu: [commandMenuItem("view.settings", "設定を開く…"), { type: "separator" }, commandMenuItem("view.settings.appearance"), commandMenuItem("view.settings.layout"), commandMenuItem("view.settings.editor"), commandMenuItem("view.settings.ai"), commandMenuItem("view.settings.accounts"), commandMenuItem("view.settings.keyboard"), commandMenuItem("view.settings.updates")] },
-    { label: "表示", submenu: [commandMenuItem("view.lens"), commandMenuItem("view.search"), commandMenuItem("view.history"), { type: "separator" }, { role: "togglefullscreen" }, { role: "resetZoom" }, { role: "zoomIn" }, { role: "zoomOut" }] },
+    { label: "表示", submenu: [commandMenuItem("view.outline"), commandMenuItem("view.lens"), commandMenuItem("view.search"), commandMenuItem("view.history"), { type: "separator" }, commandMenuItem("view.zen"), commandMenuItem("layout.reset"), { type: "separator" }, { role: "togglefullscreen" }, { role: "resetZoom" }, { role: "zoomIn" }, { role: "zoomOut" }] },
     { label: "ヘルプ", submenu: [commandMenuItem("updates.check"), { label: "GitHub Releasesを開く", click: () => { void openExternalPage("latest-release"); } }] }
   ];
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
@@ -360,12 +362,13 @@ function installMenu(): void {
 
 async function createWindow(): Promise<void> {
   closeApproved = false;
+  const dark = userSettings.appearance.colorTheme === "dark" || (userSettings.appearance.colorTheme === "system" && nativeTheme.shouldUseDarkColors);
   mainWindow = new BrowserWindow({
     width: 1440,
     height: 920,
     minWidth: 980,
     minHeight: 680,
-    backgroundColor: "#f3efe7",
+    backgroundColor: dark ? "#15201c" : "#eee9df",
     title: "Novel Lens",
     show: false,
     webPreferences: {

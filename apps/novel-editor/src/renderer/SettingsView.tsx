@@ -6,11 +6,13 @@ import {
   COMMAND_DEFINITIONS,
   bindingFromKeyboardEvent,
   formatKeybinding,
+  placeViewOnSide,
   type AppCommandId,
   type EditorPreferences,
   type UserSettings,
   type UserSettingsPatch
 } from "../shared/settings.js";
+import { defaultLayout, LAYOUT_LIMITS, type PhysicalSide, type SlotId, type ViewId } from "../shared/layout.js";
 import type { AppInfo, ConnectionStatus, ProjectSettings, ProjectSummary, UpdateStatus } from "../shared/types.js";
 
 export type SettingsCategory = "general" | "appearance" | "layout" | "editor" | "ai" | "accounts" | "keyboard" | "updates" | "about";
@@ -45,7 +47,7 @@ interface SettingsViewProps {
 const CATEGORIES: readonly { id: SettingsCategory; label: string; icon: IconName; search: string }[] = [
   { id: "general", label: "全般", icon: "settings", search: "全般 自動保存 起動" },
   { id: "appearance", label: "外観", icon: "sun", search: "外観 テーマ 色 アクセント 密度" },
-  { id: "layout", label: "レイアウト", icon: "layout", search: "レイアウト サイドバー インスペクター パネル Zen" },
+  { id: "layout", label: "レイアウト", icon: "layout", search: "レイアウト サイドバー インスペクター パネル 章 アウトライン レンズ 検索 履歴 左 右 下 Zen" },
   { id: "editor", label: "エディター", icon: "edit", search: "エディター 縦書き 横書き フォント テーマ 文字 行間 幅" },
   { id: "ai", label: "AI", icon: "lens", search: "AI OpenAI ChatGPT API model レンズ" },
   { id: "accounts", label: "アカウント", icon: "settings", search: "アカウント ChatGPT OpenAI GitHub ログイン 認証" },
@@ -67,6 +69,21 @@ function projectValue(project: ProjectSummary | null, key: EditorKey): unknown {
 function settingMatches(query: string, ...terms: string[]): boolean {
   const normalized = query.trim().toLocaleLowerCase();
   return normalized.length === 0 || terms.join(" ").toLocaleLowerCase().includes(normalized);
+}
+
+const VIEW_LABELS: Record<ViewId, string> = { outline: "章アウトライン", lens: "編集レンズ", search: "作品内検索", history: "履歴" };
+
+function viewSlot(layout: UserSettings["layout"], view: ViewId): SlotId {
+  if (layout.slots.primary.views.includes(view)) return "primary";
+  if (layout.slots.secondary.views.includes(view)) return "secondary";
+  return "bottom";
+}
+
+function viewSide(layout: UserSettings["layout"], view: ViewId): PhysicalSide | "bottom" {
+  const slot = viewSlot(layout, view);
+  if (slot === "bottom") return "bottom";
+  if (slot === "primary") return layout.primarySide;
+  return layout.secondarySameSide ? layout.primarySide : layout.primarySide === "left" ? "right" : "left";
 }
 
 function StatusBadge({ state, children }: { state: "ok" | "warn" | "muted"; children: ReactNode }): ReactNode {
@@ -195,21 +212,21 @@ export function SettingsView(props: SettingsViewProps): ReactNode {
           <SettingRow title="自動保存" description="入力を止めてから保存するまでの時間です。IME変換中は保存しません。"><select value={props.settings.general.autoSaveDelayMs} onChange={(event) => void props.onUpdateUser({ general: { autoSaveDelayMs: Number(event.target.value) } })}><option value="400">0.4秒</option><option value="800">0.8秒</option><option value="1500">1.5秒</option><option value="3000">3秒</option></select></SettingRow>
           <SettingRow title="設定の保存場所" description="ユーザー設定はOSのNovel Lens設定フォルダーに保存します。APIキーとGitHub tokenは含みません。"><StatusBadge state="ok">ローカルのみ</StatusBadge></SettingRow>
         </SettingsSection>}
-        {props.category === "appearance" && <SettingsSection eyebrow="APPEARANCE" title="外観" lead="Novel Lensの色と表示密度を設定します。作品本文には保存されません。">
-          <SettingRow title="カラーテーマ" description="システム設定に合わせるか、明るい／暗い外観を選びます。"><select value={props.settings.appearance.colorTheme} onChange={(event) => void props.onUpdateUser({ appearance: { colorTheme: event.target.value as "system" | "light" | "dark" } })}><option value="system">システムに合わせる</option><option value="light">ライト</option><option value="dark">ダーク</option></select></SettingRow>
-          <SettingRow title="アクセントカラー" description="操作ボタンや選択状態に使う色です。"><select value={props.settings.appearance.accent} onChange={(event) => void props.onUpdateUser({ appearance: { accent: event.target.value as "violet" | "blue" | "amber" } })}><option value="violet">バイオレット</option><option value="blue">ブルー</option><option value="amber">アンバー</option></select></SettingRow>
+        {props.category === "appearance" && <SettingsSection eyebrow="APPEARANCE" title="外観" lead="作業UIの色と表示密度を設定します。原稿キャンバスの紙色はエディター設定で独立して選べます。">
+          <SettingRow title="カラーテーマ" description="トップバー、パネル、設定、ダイアログをライトまたはダークで統一します。"><select value={props.settings.appearance.colorTheme} onChange={(event) => void props.onUpdateUser({ appearance: { colorTheme: event.target.value as "system" | "light" | "dark" } })}><option value="system">システムに合わせる</option><option value="light">ライト</option><option value="dark">ダーク</option></select></SettingRow>
+          <SettingRow title="アクセントカラー" description="アイコン由来の森・金・インクから選びます。"><select value={props.settings.appearance.accent} onChange={(event) => void props.onUpdateUser({ appearance: { accent: event.target.value as "forest" | "gold" | "ink" } })}><option value="forest">森</option><option value="gold">金</option><option value="ink">インク</option></select></SettingRow>
           <SettingRow title="表示密度" description="各パネルの余白とコントロールの密度を調整します。"><select value={props.settings.appearance.density} onChange={(event) => void props.onUpdateUser({ appearance: { density: event.target.value as "comfortable" | "compact" } })}><option value="comfortable">標準</option><option value="compact">コンパクト</option></select></SettingRow>
         </SettingsSection>}
-        {props.category === "layout" && <SettingsSection eyebrow="LAYOUT" title="レイアウト" lead="サイドバーやパネルの位置・表示を設定します。">
-          <SettingRow title="メインサイドバー" description="作品ナビゲーションを表示する位置です。"><select value={props.settings.layout.primarySidebar} onChange={(event) => void props.onUpdateUser({ layout: { primarySidebar: event.target.value as "left" | "right" } })}><option value="left">左</option><option value="right">右</option></select></SettingRow>
-          <SettingRow title="インスペクター" description="編集レンズ・検索・履歴を表示する位置です。"><select value={props.settings.layout.inspector} onChange={(event) => void props.onUpdateUser({ layout: { inspector: event.target.value as "left" | "right" | "bottom" } })}><option value="right">右</option><option value="left">左</option><option value="bottom">下</option></select></SettingRow>
-          <SettingRow title="アクティビティバー" description="ビュー切り替えバーの位置です。"><select value={props.settings.layout.activityBar} onChange={(event) => void props.onUpdateUser({ layout: { activityBar: event.target.value as "left" | "right" } })}><option value="left">左</option><option value="right">右</option></select></SettingRow>
-          <SettingRow title="表示するパネル" description="メインサイドバーとインスペクターの表示を切り替えます。"><div className="settings-checks"><label className="toggle"><input type="checkbox" checked={props.settings.layout.showPrimarySidebar} onChange={(event) => void props.onUpdateUser({ layout: { showPrimarySidebar: event.target.checked } })} />作品サイドバー</label><label className="toggle"><input type="checkbox" checked={props.settings.layout.showInspector} onChange={(event) => void props.onUpdateUser({ layout: { showInspector: event.target.checked } })} />インスペクター</label></div></SettingRow>
-          <SettingRow title="サイドバー幅" description={`${props.settings.layout.sidebarWidth} px`}><input aria-label="サイドバー幅" type="range" min="180" max="420" step="4" value={props.settings.layout.sidebarWidth} onChange={(event) => void props.onUpdateUser({ layout: { sidebarWidth: Number(event.target.value) } })} /></SettingRow>
-          <SettingRow title="インスペクター幅" description={`${props.settings.layout.inspectorWidth} px`}><input aria-label="インスペクター幅" type="range" min="280" max="680" step="10" value={props.settings.layout.inspectorWidth} onChange={(event) => void props.onUpdateUser({ layout: { inspectorWidth: Number(event.target.value) } })} /></SettingRow>
-          <SettingRow title="下部パネルの高さ" description={`${props.settings.layout.bottomPanelHeight} px`}><input aria-label="下部パネルの高さ" type="range" min="200" max="560" step="10" value={props.settings.layout.bottomPanelHeight} onChange={(event) => void props.onUpdateUser({ layout: { bottomPanelHeight: Number(event.target.value) } })} /></SettingRow>
+        {props.category === "layout" && <SettingsSection eyebrow="LAYOUT" title="レイアウト" lead="タブや左端のアイコンをドラッグして移動できます。ここでは同じ配置を選択操作で設定できます。">
+          <SettingRow title="メインサイドバー" description="章アウトラインの基準辺です。"><select value={props.settings.layout.primarySide} onChange={(event) => void props.onUpdateUser({ layout: { primarySide: event.target.value as PhysicalSide } })}><option value="left">左</option><option value="right">右</option></select></SettingRow>
+          <SettingRow title="アクティビティバー" description="ビュー切り替えバーの位置です。"><select value={props.settings.layout.activityBar} onChange={(event) => void props.onUpdateUser({ layout: { activityBar: event.target.value as PhysicalSide } })}><option value="left">左</option><option value="right">右</option></select></SettingRow>
+          {(["outline", "lens", "search", "history"] as const).map((view) => <SettingRow key={view} title={VIEW_LABELS[view]} description="ビュー単位で左・右・下へ配置します。"><select aria-label={`${VIEW_LABELS[view]}の位置`} value={viewSide(props.settings.layout, view)} onChange={(event) => void props.onUpdateUser({ layout: placeViewOnSide(props.settings.layout, view, event.target.value as PhysicalSide | "bottom") })}><option value="left">左</option><option value="right">右</option><option value="bottom">下</option></select></SettingRow>)}
+          <SettingRow title="表示するパネル" description="スロットごとの表示を切り替えます。ビューの所属は保持されます。"><div className="settings-checks"><label className="toggle"><input type="checkbox" checked={props.settings.layout.slots.primary.visible} onChange={(event) => void props.onUpdateUser({ layout: { slots: { primary: { visible: event.target.checked } } } })} />章アウトライン</label><label className="toggle"><input type="checkbox" checked={props.settings.layout.slots.secondary.visible} onChange={(event) => void props.onUpdateUser({ layout: { slots: { secondary: { visible: event.target.checked } } } })} />左右パネル</label><label className="toggle"><input type="checkbox" checked={props.settings.layout.slots.bottom.visible} onChange={(event) => void props.onUpdateUser({ layout: { slots: { bottom: { visible: event.target.checked } } } })} />下部パネル</label></div></SettingRow>
+          <SettingRow title="サイドバー幅" description={`${props.settings.layout.slots.primary.size} px`}><input aria-label="サイドバー幅" type="range" min={LAYOUT_LIMITS.primary.min} max={LAYOUT_LIMITS.primary.max} step="4" value={props.settings.layout.slots.primary.size} onChange={(event) => void props.onUpdateUser({ layout: { slots: { primary: { size: Number(event.target.value) } } } })} /></SettingRow>
+          <SettingRow title="インスペクター幅" description={`${props.settings.layout.slots.secondary.size} px`}><input aria-label="インスペクター幅" type="range" min={LAYOUT_LIMITS.secondary.min} max={LAYOUT_LIMITS.secondary.max} step="10" value={props.settings.layout.slots.secondary.size} onChange={(event) => void props.onUpdateUser({ layout: { slots: { secondary: { size: Number(event.target.value) } } } })} /></SettingRow>
+          <SettingRow title="下部パネルの高さ" description={`${props.settings.layout.slots.bottom.size} px`}><input aria-label="下部パネルの高さ" type="range" min={LAYOUT_LIMITS.bottom.min} max={LAYOUT_LIMITS.bottom.max} step="10" value={props.settings.layout.slots.bottom.size} onChange={(event) => void props.onUpdateUser({ layout: { slots: { bottom: { size: Number(event.target.value) } } } })} /></SettingRow>
           <SettingRow title="集中モード（Zen）" description="サイドバーとインスペクターを隠し、本文に集中します。"><label className="toggle"><input type="checkbox" checked={props.settings.layout.zenMode} onChange={(event) => void props.onUpdateUser({ layout: { zenMode: event.target.checked } })} />{props.settings.layout.zenMode ? "オン" : "オフ"}</label></SettingRow>
-          <div className="settings-actions"><button className="secondary" onClick={() => void props.onUpdateUser({ layout: { primarySidebar: "left", inspector: "right", activityBar: "left", showPrimarySidebar: true, showInspector: true, sidebarWidth: 252, inspectorWidth: 380, bottomPanelHeight: 310, zenMode: false } })}>既定レイアウトへ戻す</button></div>
+          <div className="settings-actions"><button className="secondary" onClick={() => void props.onUpdateUser({ layout: defaultLayout() })}>既定レイアウトへ戻す</button></div>
         </SettingsSection>}
         {props.category === "editor" && <SettingsSection eyebrow="EDITOR" title="エディター" lead="VS Codeと同じように、ユーザー既定値と作品固有の上書きを分けます。">{editorPanel}</SettingsSection>}
         {props.category === "ai" && <SettingsSection eyebrow="AI CONNECTION" title="AIレンズ" lead="ChatGPTのCodex利用枠、または任意のOpenAI APIキーで、選んだ原稿範囲だけを読みます。">

@@ -1,7 +1,22 @@
 import { getRole, ROLE_REGISTRY, textStats } from "@novel-lens/editor-core";
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 
-import { defaultUserSettings, type UserSettingsPatch } from "../shared/settings.js";
+import {
+  defaultLayout,
+  defaultUserSettings,
+  LAYOUT_LIMITS,
+  moveSlotToSide,
+  moveView,
+  placeViewOnSide,
+  sideOf,
+  slotOf,
+  VIEW_IDS,
+  type LayoutPreferences,
+  type PhysicalSide,
+  type SlotId,
+  type UserSettingsPatch,
+  type ViewId
+} from "../shared/settings.js";
 import type {
   AppInfo,
   ChapterDocument,
@@ -21,9 +36,47 @@ import type {
 import { SettingsView, type SettingsCategory } from "./SettingsView.js";
 import { AppIcon } from "./AppIcon.js";
 
-type InspectorTab = "lens" | "search" | "history";
 type SaveState = "saved" | "dirty" | "saving" | "error";
 type ScopeMode = "current" | "through-current" | "all";
+
+type DropTarget =
+  | { kind: "slot-tab"; slot: SlotId; index: number }
+  | { kind: "side-edge"; side: PhysicalSide }
+  | { kind: "bottom-edge" }
+  | { kind: "reject" };
+
+interface DockDragState {
+  view: ViewId;
+  x: number;
+  y: number;
+  target: DropTarget;
+}
+
+interface ViewMenuState {
+  view: ViewId;
+  x: number;
+  y: number;
+}
+
+const VIEW_LABELS: Record<ViewId, string> = {
+  outline: "章・場面",
+  lens: "編集レンズ",
+  search: "作品内検索",
+  history: "履歴"
+};
+
+function applyDropTarget(layout: LayoutPreferences, view: ViewId, target: DropTarget): LayoutPreferences {
+  if (target.kind === "reject") return layout;
+  if (target.kind === "slot-tab") return moveView(layout, view, target.slot, target.index);
+  if (target.kind === "bottom-edge") return moveView(layout, view, "bottom");
+  const source = slotOf(layout, view);
+  if (source === null) return layout;
+  if (source === "bottom") {
+    const destination: SlotId = target.side === layout.primarySide ? "primary" : "secondary";
+    return moveView(layout, view, destination);
+  }
+  return moveSlotToSide(layout, source, target.side);
+}
 
 interface TextPromptRequest {
   id: number;
@@ -63,6 +116,7 @@ export function App(): ReactNode {
   const [appInfo, setAppInfo] = useState<AppInfo | null>(null);
   const [userSettings, setUserSettings] = useState(defaultUserSettings);
   const [systemDark, setSystemDark] = useState(() => window.matchMedia?.("(prefers-color-scheme: dark)").matches ?? true);
+  const [viewport, setViewport] = useState(() => ({ width: window.innerWidth, height: window.innerHeight }));
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsCategory, setSettingsCategory] = useState<SettingsCategory>("general");
   const [connections, setConnections] = useState<ConnectionStatus>(DEFAULT_CONNECTIONS);
@@ -77,7 +131,9 @@ export function App(): ReactNode {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [inspectorTab, setInspectorTab] = useState<InspectorTab>("lens");
+  const [dockDrag, setDockDrag] = useState<DockDragState | null>(null);
+  const [viewMenu, setViewMenu] = useState<ViewMenuState | null>(null);
+  const [layoutAnnouncement, setLayoutAnnouncement] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [searchHits, setSearchHits] = useState<SearchHit[]>([]);
   const [checkpoints, setCheckpoints] = useState<CheckpointEntry[]>([]);
@@ -92,6 +148,9 @@ export function App(): ReactNode {
   const [lensBusy, setLensBusy] = useState(false);
   const [textPrompt, setTextPrompt] = useState<TextPromptRequest | null>(null);
   const editorRef = useRef<HTMLTextAreaElement>(null);
+  const workspaceRef = useRef<HTMLDivElement>(null);
+  const dockSessionRef = useRef<DockDragState | null>(null);
+  const suppressDockClickRef = useRef(false);
   const promptResolverRef = useRef<((value: string | null) => void) | null>(null);
   const promptSequenceRef = useRef(0);
 
@@ -102,6 +161,26 @@ export function App(): ReactNode {
     query.addEventListener("change", onChange);
     return () => query.removeEventListener("change", onChange);
   }, []);
+
+  useEffect(() => {
+    const onResize = (): void => setViewport({ width: window.innerWidth, height: window.innerHeight });
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
+  useEffect(() => {
+    if (viewMenu === null) return;
+    const closeOutside = (event: PointerEvent): void => {
+      if (!(event.target instanceof Element) || event.target.closest(".view-context-menu") === null) setViewMenu(null);
+    };
+    const closeOnEscape = (event: KeyboardEvent): void => { if (event.key === "Escape") setViewMenu(null); };
+    window.addEventListener("pointerdown", closeOutside);
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      window.removeEventListener("pointerdown", closeOutside);
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [viewMenu]);
 
   const requestText = useCallback((options: TextPromptOptions): Promise<string | null> => {
     promptResolverRef.current?.(null);
@@ -359,7 +438,10 @@ export function App(): ReactNode {
     catch (cause) { setError(errorText(cause)); }
   }, [project]);
 
-  useEffect(() => { if (inspectorTab === "history") void loadCheckpoints(); }, [inspectorTab, loadCheckpoints]);
+  useEffect(() => {
+    const historySlot = slotOf(userSettings.layout, "history");
+    if (historySlot !== null && !userSettings.layout.zenMode && userSettings.layout.slots[historySlot].visible && userSettings.layout.slots[historySlot].activeView === "history") void loadCheckpoints();
+  }, [loadCheckpoints, userSettings.layout]);
 
   const createCheckpoint = useCallback(async (): Promise<void> => {
     if (project === null) return;
@@ -422,52 +504,146 @@ export function App(): ReactNode {
     void updateUserSettings({ appearance: { colorTheme: colorTheme === "dark" ? "light" : "dark" } });
   }, [colorTheme, updateUserSettings]);
 
-  const toggleLayoutFlag = useCallback((key: "showPrimarySidebar" | "showInspector" | "zenMode"): void => {
-    void updateUserSettings({ layout: { [key]: !userSettings.layout[key] } });
-  }, [updateUserSettings, userSettings.layout]);
+  const commitLayout = useCallback((layout: LayoutPreferences, announcement?: string): void => {
+    void updateUserSettings({ layout });
+    if (announcement !== undefined) setLayoutAnnouncement(announcement);
+  }, [updateUserSettings]);
 
-  const revealInspector = useCallback((tab: InspectorTab): void => {
+  const revealView = useCallback((view: ViewId): void => {
     setSettingsOpen(false);
-    setInspectorTab(tab);
-    if (!userSettings.layout.showInspector || userSettings.layout.zenMode) {
-      void updateUserSettings({ layout: { showInspector: true, zenMode: false } });
-    }
-  }, [updateUserSettings, userSettings.layout.showInspector, userSettings.layout.zenMode]);
+    const slot = slotOf(userSettings.layout, view);
+    if (slot === null) return;
+    commitLayout({
+      ...userSettings.layout,
+      zenMode: false,
+      slots: {
+        ...userSettings.layout.slots,
+        [slot]: { ...userSettings.layout.slots[slot], visible: true, activeView: view }
+      }
+    });
+  }, [commitLayout, userSettings.layout]);
 
-  const beginPaneResize = useCallback((kind: "sidebar" | "inspector" | "bottom", event: ReactPointerEvent<HTMLDivElement>): void => {
+  const toggleView = useCallback((view: ViewId): void => {
+    const slot = slotOf(userSettings.layout, view);
+    if (slot === null) return;
+    const slotState = userSettings.layout.slots[slot];
+    if (userSettings.layout.zenMode || !slotState.visible || slotState.activeView !== view) {
+      revealView(view);
+      return;
+    }
+    commitLayout({
+      ...userSettings.layout,
+      slots: { ...userSettings.layout.slots, [slot]: { ...slotState, visible: false } }
+    });
+  }, [commitLayout, revealView, userSettings.layout]);
+
+  const beginPaneResize = useCallback((slot: SlotId, event: ReactPointerEvent<HTMLDivElement>): void => {
     event.preventDefault();
-    const { layout } = userSettings;
+    const layout = userSettings.layout;
     const startX = event.clientX;
     const startY = event.clientY;
-    const startValue = kind === "sidebar" ? layout.sidebarWidth : kind === "inspector" ? layout.inspectorWidth : layout.bottomPanelHeight;
+    const startValue = layout.slots[slot].size;
     let latest = startValue;
+    let finished = false;
     const onMove = (moveEvent: PointerEvent): void => {
-      if (kind === "bottom") latest = Math.max(200, Math.min(560, startValue - (moveEvent.clientY - startY)));
-      else if (kind === "sidebar") {
-        const direction = layout.primarySidebar === "left" ? 1 : -1;
-        latest = Math.max(180, Math.min(420, startValue + (moveEvent.clientX - startX) * direction));
-      } else {
-        const direction = layout.inspector === "left" ? 1 : -1;
-        latest = Math.max(280, Math.min(680, startValue + (moveEvent.clientX - startX) * direction));
+      if (slot === "bottom") latest = Math.max(LAYOUT_LIMITS.bottom.min, Math.min(LAYOUT_LIMITS.bottom.max, startValue - (moveEvent.clientY - startY)));
+      else {
+        const direction = sideOf(slot, layout) === "left" ? 1 : -1;
+        const limits = LAYOUT_LIMITS[slot];
+        latest = Math.max(limits.min, Math.min(limits.max, startValue + (moveEvent.clientX - startX) * direction));
       }
       setUserSettings((current) => ({
         ...current,
         layout: {
           ...current.layout,
-          ...(kind === "sidebar" ? { sidebarWidth: latest } : kind === "inspector" ? { inspectorWidth: latest } : { bottomPanelHeight: latest })
+          slots: { ...current.layout.slots, [slot]: { ...current.layout.slots[slot], size: latest } }
         }
       }));
     };
-    const onUp = (): void => {
+    const finish = (): void => {
+      if (finished) return;
+      finished = true;
       window.removeEventListener("pointermove", onMove);
-      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointerup", finish);
+      window.removeEventListener("pointercancel", finish);
       document.body.classList.remove("is-resizing");
-      void updateUserSettings({ layout: kind === "sidebar" ? { sidebarWidth: latest } : kind === "inspector" ? { inspectorWidth: latest } : { bottomPanelHeight: latest } });
+      void updateUserSettings({ layout: { slots: { [slot]: { size: latest } } } });
     };
+    document.body.classList.remove("is-docking");
     document.body.classList.add("is-resizing");
     window.addEventListener("pointermove", onMove);
-    window.addEventListener("pointerup", onUp, { once: true });
-  }, [updateUserSettings, userSettings]);
+    window.addEventListener("pointerup", finish);
+    window.addEventListener("pointercancel", finish);
+  }, [updateUserSettings, userSettings.layout]);
+
+  const detectDropTarget = useCallback((x: number, y: number): DropTarget => {
+    const element = document.elementFromPoint(x, y) as HTMLElement | null;
+    const slotElement = element?.closest<HTMLElement>("[data-slot-id]");
+    if (slotElement !== null && slotElement !== undefined) {
+      const slot = slotElement.dataset["slotId"] as SlotId;
+      const tabs = [...slotElement.querySelectorAll<HTMLElement>("[data-view-tab]")];
+      const index = tabs.filter((tab) => x > tab.getBoundingClientRect().left + tab.getBoundingClientRect().width / 2).length;
+      return { kind: "slot-tab", slot, index };
+    }
+    const workspace = workspaceRef.current?.getBoundingClientRect();
+    if (workspace === undefined) return { kind: "reject" };
+    const editor = workspaceRef.current?.querySelector<HTMLElement>("[data-editor-pane]")?.getBoundingClientRect();
+    if (!userSettings.layout.slots.bottom.visible && editor !== undefined && x >= editor.left && x <= editor.right && y >= editor.bottom - 52) return { kind: "bottom-edge" };
+    if (x <= workspace.left + 54) return { kind: "side-edge", side: "left" };
+    if (x >= workspace.right - 54) return { kind: "side-edge", side: "right" };
+    return { kind: "reject" };
+  }, [userSettings.layout.slots.bottom.visible]);
+
+  const beginDockDrag = useCallback((view: ViewId, event: ReactPointerEvent<HTMLElement>): void => {
+    if (isComposing || event.button !== 0) return;
+    const startX = event.clientX;
+    const startY = event.clientY;
+    let started = false;
+    let finished = false;
+    const onMove = (moveEvent: PointerEvent): void => {
+      if (!started && Math.hypot(moveEvent.clientX - startX, moveEvent.clientY - startY) < 6) return;
+      if (!started) {
+        started = true;
+        suppressDockClickRef.current = true;
+        document.body.classList.remove("is-resizing");
+        document.body.classList.add("is-docking");
+      }
+      const next: DockDragState = { view, x: moveEvent.clientX, y: moveEvent.clientY, target: detectDropTarget(moveEvent.clientX, moveEvent.clientY) };
+      dockSessionRef.current = next;
+      setDockDrag(next);
+    };
+    const finish = (): void => {
+      if (finished) return;
+      finished = true;
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", finish);
+      window.removeEventListener("pointercancel", finish);
+      document.body.classList.remove("is-docking");
+      const session = dockSessionRef.current;
+      dockSessionRef.current = null;
+      setDockDrag(null);
+      if (session !== null && session.target.kind !== "reject") {
+        const next = applyDropTarget(userSettings.layout, session.view, session.target);
+        commitLayout(next, `${VIEW_LABELS[session.view]}を移動しました`);
+      }
+      if (started) window.setTimeout(() => { suppressDockClickRef.current = false; }, 0);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", finish);
+    window.addEventListener("pointercancel", finish);
+  }, [commitLayout, detectDropTarget, isComposing, userSettings.layout]);
+
+  const openViewMenu = useCallback((view: ViewId, x: number, y: number): void => {
+    setViewMenu({ view, x: Math.min(x, window.innerWidth - 220), y: Math.min(y, window.innerHeight - 270) });
+  }, []);
+
+  const handleViewMenuKey = useCallback((view: ViewId, event: ReactKeyboardEvent<HTMLElement>): void => {
+    if (event.key === "ContextMenu" || (event.key === "F10" && event.shiftKey)) {
+      event.preventDefault();
+      const rect = event.currentTarget.getBoundingClientRect();
+      openViewMenu(view, rect.left + 12, rect.bottom + 4);
+    }
+  }, [openViewMenu]);
 
   const openSettings = useCallback((category: SettingsCategory = "general"): void => {
     setSettingsCategory(category);
@@ -570,23 +746,25 @@ export function App(): ReactNode {
     else if (action === "view.settings.accounts") openSettings("accounts");
     else if (action === "view.settings.keyboard") openSettings("keyboard");
     else if (action === "view.settings.updates") openSettings("updates");
-    else if (action === "view.search") revealInspector("search");
-    else if (action === "view.lens") revealInspector("lens");
-    else if (action === "view.history") revealInspector("history");
+    else if (action === "view.outline") revealView("outline");
+    else if (action === "view.search") revealView("search");
+    else if (action === "view.lens") revealView("lens");
+    else if (action === "view.history") revealView("history");
+    else if (action === "view.zen") commitLayout({ ...userSettings.layout, zenMode: !userSettings.layout.zenMode });
+    else if (action === "layout.reset") commitLayout(defaultLayout(), "レイアウトを既定へ戻しました");
     else if (action === "updates.check") { openSettings("updates"); void checkUpdates(); }
-  }), [checkUpdates, createCheckpoint, createProject, exportProject, openProject, openSettings, revealInspector, saveNow]);
+  }), [checkUpdates, commitLayout, createCheckpoint, createProject, exportProject, openProject, openSettings, revealView, saveNow, userSettings.layout]);
 
   useEffect(() => window.novelLens.onBeforeClose(saveNow), [saveNow]);
 
   const layout = userSettings.layout;
-  const showPrimarySidebar = layout.showPrimarySidebar && !layout.zenMode;
-  const showInspector = layout.showInspector && !layout.zenMode;
-  type WorkbenchArea = "activity" | "outline" | "editor" | "inspector";
+  const slotVisible = (slot: SlotId): boolean => !layout.zenMode && layout.slots[slot].visible && layout.slots[slot].views.length > 0;
+  type WorkbenchArea = "activity" | "primary" | "editor" | "secondary";
   const leftAreas: WorkbenchArea[] = [];
   const rightAreas: WorkbenchArea[] = [];
-  if (showPrimarySidebar) (layout.primarySidebar === "left" ? leftAreas : rightAreas).push("outline");
-  if (showInspector && layout.inspector !== "bottom") (layout.inspector === "left" ? leftAreas : rightAreas).push("inspector");
-  if (rightAreas.includes("outline") && rightAreas.includes("inspector")) rightAreas.reverse();
+  if (slotVisible("primary")) (sideOf("primary", layout) === "left" ? leftAreas : rightAreas).push("primary");
+  if (slotVisible("secondary")) (sideOf("secondary", layout) === "left" ? leftAreas : rightAreas).push("secondary");
+  if (rightAreas.includes("primary") && rightAreas.includes("secondary")) rightAreas.reverse();
   const columnAreas: WorkbenchArea[] = [
     ...(layout.zenMode || layout.activityBar !== "left" ? [] : ["activity" as const]),
     ...leftAreas,
@@ -595,10 +773,21 @@ export function App(): ReactNode {
     ...(layout.zenMode || layout.activityBar !== "right" ? [] : ["activity" as const])
   ];
   const columnFor = (area: WorkbenchArea): number => columnAreas.indexOf(area) + 1;
-  const bottomInspector = showInspector && layout.inspector === "bottom";
+  const bottomVisible = slotVisible("bottom");
+  let livePrimarySize = layout.slots.primary.size;
+  let liveSecondarySize = layout.slots.secondary.size;
+  const widthBudget = Math.max(0, viewport.width - (layout.zenMode ? 0 : 52) - 430);
+  let widthOverflow = (slotVisible("primary") ? livePrimarySize : 0) + (slotVisible("secondary") ? liveSecondarySize : 0) - widthBudget;
+  if (widthOverflow > 0 && slotVisible("secondary")) {
+    const shrink = Math.min(widthOverflow, Math.max(0, liveSecondarySize - LAYOUT_LIMITS.secondary.min));
+    liveSecondarySize -= shrink;
+    widthOverflow -= shrink;
+  }
+  if (widthOverflow > 0 && slotVisible("primary")) livePrimarySize -= Math.min(widthOverflow, Math.max(0, livePrimarySize - LAYOUT_LIMITS.primary.min));
+  const liveBottomSize = Math.max(0, Math.min(layout.slots.bottom.size, viewport.height - 64 - 240));
   const workspaceStyle = {
-    gridTemplateColumns: columnAreas.map((area) => area === "activity" ? "52px" : area === "outline" ? `${layout.sidebarWidth}px` : area === "inspector" ? `${layout.inspectorWidth}px` : "minmax(0, 1fr)").join(" "),
-    gridTemplateRows: bottomInspector ? `minmax(0, 1fr) ${layout.bottomPanelHeight}px` : "minmax(0, 1fr)"
+    gridTemplateColumns: columnAreas.map((area) => area === "activity" ? "var(--nl-activity, 52px)" : area === "primary" ? `${livePrimarySize}px` : area === "secondary" ? `${liveSecondarySize}px` : "minmax(430px, 1fr)").join(" "),
+    gridTemplateRows: bottomVisible ? `minmax(240px, 1fr) ${liveBottomSize}px` : "minmax(240px, 1fr)"
   } as CSSProperties;
   const shellStyle = {
     "--editor-font": editorFont,
@@ -646,19 +835,90 @@ export function App(): ReactNode {
     {settingsOverlay}
   </div>;
 
-  const inspectorContent = <>
-    <div className="tabs" role="tablist">
-      {(["lens", "search", "history"] as const).map((tab) => <button key={tab} className={inspectorTab === tab ? "active" : ""} onClick={() => setInspectorTab(tab)}>{tab === "lens" ? "レンズ" : tab === "search" ? "検索" : "履歴"}</button>)}
-    </div>
-    {inspectorTab === "lens" && <LensPanel
+  const selectViewInSlot = (slot: SlotId, view: ViewId): void => {
+    commitLayout({
+      ...layout,
+      slots: { ...layout.slots, [slot]: { ...layout.slots[slot], activeView: view, visible: true } }
+    });
+  };
+
+  const renderView = (view: ViewId): ReactNode => {
+    if (view === "outline") return <div className="outline-content">
+      <div
+        className="pane-heading dock-handle"
+        onPointerDown={(event) => beginDockDrag("outline", event)}
+        onContextMenu={(event) => { event.preventDefault(); openViewMenu("outline", event.clientX, event.clientY); }}
+        onKeyDown={(event) => handleViewMenuKey("outline", event)}
+        tabIndex={0}
+      ><div><span className="eyebrow">MANUSCRIPT</span><h2>章・場面</h2></div><div className="pane-tools"><button className="icon-button import-button" title="TXT / Markdownを取り込む" onClick={importDocuments}><AppIcon name="import" /></button><button className="icon-button" title="章・場面を追加" onClick={addChapter}><AppIcon name="add" /></button></div></div>
+      <nav className="chapter-list" aria-label="章・場面">
+        {manifestChapters.map((item) => <button key={item.id} className={item.id === activeChapterId ? "chapter active" : "chapter"} onClick={() => void loadChapter(item.id)} disabled={busy}>
+          <span className="chapter-order">{String(item.order + 1).padStart(2, "0")}</span><span>{item.title}</span>
+        </button>)}
+      </nav>
+      <div className="outline-footer"><code title={project.root}>{project.root}</code><span>Markdown正本</span></div>
+    </div>;
+    if (view === "lens") return <LensPanel
       role={role} setRole={setRole} provider={provider} setProvider={(next) => { setProvider(next); setModelId(next === "codex" ? userSettings.ai.codexModel : next === "openai" ? userSettings.ai.openaiModel : "offline-mock-v0.1"); }} modelId={modelId} setModelId={(value) => { setModelId(value); if (provider === "codex") void updateUserSettings({ ai: { codexModel: value } }); }} codexModels={connections.codex.models} codexConnected={connections.codex.connected} openAIConnected={connections.openai.connected} onOpenSettings={() => openSettings("ai")}
       query={lensQuery} setQuery={setLensQuery} scopeMode={scopeMode} setScopeMode={setScopeMode} scopeTitles={scopeChapters.map((item) => item.title)}
       approved={scopeApproved} setApproved={setScopeApproved} thread={threads[role]} result={lensResult?.role === role ? lensResult : null}
       running={lensBusy} onRun={invokeLens} onClear={() => { setThreads((current) => ({ ...current, [role]: [] })); setLensResult(null); }} onFinding={jumpToFinding}
-    />}
-    {inspectorTab === "search" && <SearchPanel query={searchQuery} setQuery={setSearchQuery} hits={searchHits} onSearch={runSearch} onHit={(hit) => void loadChapter(hit.chapterId, hit)} />}
-    {inspectorTab === "history" && <HistoryPanel entries={checkpoints} onCreate={createCheckpoint} onRestore={restoreCheckpoint} onVariation={createVariation} />}
-  </>;
+    />;
+    if (view === "search") return <SearchPanel query={searchQuery} setQuery={setSearchQuery} hits={searchHits} onSearch={runSearch} onHit={(hit) => void loadChapter(hit.chapterId, hit)} />;
+    return <HistoryPanel entries={checkpoints} onCreate={createCheckpoint} onRestore={restoreCheckpoint} onVariation={createVariation} />;
+  };
+
+  const renderSlot = (slotId: SlotId): ReactNode => {
+    if (!slotVisible(slotId)) return null;
+    const slot = layout.slots[slotId];
+    const activeView = slot.activeView ?? slot.views[0] ?? null;
+    const bottom = slotId === "bottom";
+    const physicalSide = bottom ? null : sideOf(slotId, layout);
+    const activeDrop = dockDrag?.target.kind === "slot-tab" && dockDrag.target.slot === slotId;
+    return <aside
+      className={`view-slot ${slotId === "primary" ? "outline-pane" : "inspector-pane"} slot-${slotId} ${bottom ? "dock-bottom" : `dock-${physicalSide}`} ${activeDrop ? "dock-target-active" : ""}`}
+      style={{ gridColumn: bottom ? columnFor("editor") : columnFor(slotId), gridRow: bottom ? 2 : "1 / -1" }}
+      data-slot-id={slotId}
+    >
+      <div className={`pane-resizer ${bottom ? "horizontal edge-top" : `vertical edge-${physicalSide === "left" ? "right" : "left"}`}`} onPointerDown={(event) => beginPaneResize(slotId, event)} />
+      <div className="view-tabbar" role="tablist" aria-label={`${slotId}パネル`}>
+        {slot.views.map((view) => <button
+          key={view}
+          type="button"
+          role="tab"
+          aria-selected={activeView === view}
+          className={`view-tab ${activeView === view ? "active" : ""}`}
+          data-view-tab={view}
+          title={`${VIEW_LABELS[view]} — ドラッグまたは右クリックで移動`}
+          onClick={() => { if (!suppressDockClickRef.current) selectViewInSlot(slotId, view); }}
+          onPointerDown={(event) => beginDockDrag(view, event)}
+          onContextMenu={(event: ReactMouseEvent<HTMLButtonElement>) => { event.preventDefault(); openViewMenu(view, event.clientX, event.clientY); }}
+          onKeyDown={(event) => handleViewMenuKey(view, event)}
+        ><span className="view-tab-grip" aria-hidden="true">⠿</span><AppIcon name={view === "outline" ? "files" : view} size={14} />{VIEW_LABELS[view]}</button>)}
+      </div>
+      <div className="view-slot-body">{activeView === null ? null : renderView(activeView)}</div>
+    </aside>;
+  };
+
+  const menuSlot = viewMenu === null ? null : slotOf(layout, viewMenu.view);
+  const moveMenuView = (destination: PhysicalSide | "bottom"): void => {
+    if (viewMenu === null) return;
+    commitLayout(placeViewOnSide(layout, viewMenu.view, destination), `${VIEW_LABELS[viewMenu.view]}を${destination === "left" ? "左" : destination === "right" ? "右" : "下部"}へ移動しました`);
+    setViewMenu(null);
+  };
+  const moveMenuPanel = (side: PhysicalSide): void => {
+    if (viewMenu === null || menuSlot === null || menuSlot === "bottom") return;
+    commitLayout(moveSlotToSide(layout, menuSlot, side), `${VIEW_LABELS[viewMenu.view]}のパネルを${side === "left" ? "左" : "右"}へ移動しました`);
+    setViewMenu(null);
+  };
+  const reorderMenuView = (delta: -1 | 1): void => {
+    if (viewMenu === null || menuSlot === null) return;
+    const views = layout.slots[menuSlot].views;
+    const current = views.indexOf(viewMenu.view);
+    if (current < 0) return;
+    commitLayout(moveView(layout, viewMenu.view, menuSlot, Math.max(0, Math.min(views.length - 1, current + delta))), `${VIEW_LABELS[viewMenu.view]}のタブ順を変更しました`);
+    setViewMenu(null);
+  };
 
   return <div className={shellClass} style={shellStyle}><div className={`app ${layout.zenMode ? "zen-mode" : ""}`}>
     <header className="topbar">
@@ -668,7 +928,7 @@ export function App(): ReactNode {
         <button className="ghost action-with-icon" onClick={createCheckpoint}><AppIcon name="checkpoint" />保存点</button>
         <button className="ghost action-with-icon wide-action" onClick={createVariation}><AppIcon name="files" />別案</button>
         <button className="ghost action-with-icon wide-action" onClick={exportProject}><AppIcon name="export" />書き出し</button>
-        <button className={`icon-button top-icon ${layout.zenMode ? "active" : ""}`} onClick={() => toggleLayoutFlag("zenMode")} aria-label="集中モード" title="集中モード"><AppIcon name="focus" /></button>
+        <button className={`icon-button top-icon ${layout.zenMode ? "active" : ""}`} onClick={() => commitLayout({ ...layout, zenMode: !layout.zenMode })} aria-label="集中モード" title="集中モード"><AppIcon name="focus" /></button>
         <button className="icon-button top-icon" onClick={toggleColorTheme} aria-label="配色を切り替える" title="配色を切り替える"><AppIcon name={colorTheme === "dark" ? "sun" : "moon"} /></button>
         <button className="icon-button top-icon" onClick={() => openSettings("layout")} aria-label="レイアウト設定を開く" title="レイアウト設定"><AppIcon name="layout" /></button>
         <span className={`save-indicator ${saveState}`}>{saveState === "saved" ? "保存済み" : saveState === "saving" ? "保存中…" : saveState === "dirty" ? "未保存" : "保存エラー"}</span>
@@ -677,29 +937,31 @@ export function App(): ReactNode {
 
     {(error !== null || notice !== null) && <div className={`banner ${error !== null ? "error" : "notice"}`} role="status"><span>{error ?? notice}</span><button aria-label="閉じる" onClick={clearMessages}><AppIcon name="close" /></button></div>}
 
-    <div className="workspace" style={workspaceStyle}>
+    <div className="workspace" ref={workspaceRef} style={workspaceStyle}>
       {!layout.zenMode && <aside className="activity-bar" style={{ gridColumn: columnFor("activity"), gridRow: "1 / -1" }} aria-label="表示切り替え">
         <div className="activity-main">
-          <button className={`activity-button ${showPrimarySidebar ? "active" : ""}`} onClick={() => toggleLayoutFlag("showPrimarySidebar")} title="章・場面"><AppIcon name="files" /></button>
-          <button className={`activity-button ${showInspector && inspectorTab === "lens" ? "active" : ""}`} onClick={() => revealInspector("lens")} title="編集レンズ"><AppIcon name="lens" /></button>
-          <button className={`activity-button ${showInspector && inspectorTab === "search" ? "active" : ""}`} onClick={() => revealInspector("search")} title="検索"><AppIcon name="search" /></button>
-          <button className={`activity-button ${showInspector && inspectorTab === "history" ? "active" : ""}`} onClick={() => revealInspector("history")} title="履歴"><AppIcon name="history" /></button>
+          {VIEW_IDS.map((view) => {
+            const slot = slotOf(layout, view);
+            const active = slot !== null && layout.slots[slot].visible && layout.slots[slot].activeView === view;
+            return <button
+              key={view}
+              className={`activity-button ${active ? "active" : ""}`}
+              onClick={() => { if (!suppressDockClickRef.current) toggleView(view); }}
+              onPointerDown={(event) => beginDockDrag(view, event)}
+              onContextMenu={(event) => { event.preventDefault(); openViewMenu(view, event.clientX, event.clientY); }}
+              onKeyDown={(event) => handleViewMenuKey(view, event)}
+              title={`${VIEW_LABELS[view]}（ドラッグで移動）`}
+              aria-label={VIEW_LABELS[view]}
+            ><AppIcon name={view === "outline" ? "files" : view} /></button>;
+          })}
         </div>
         <div className="activity-foot"><button className="activity-button" onClick={() => openSettings("layout")} title="レイアウト設定"><AppIcon name="layout" /></button><button className="activity-button" onClick={() => openSettings("general")} title="設定"><AppIcon name="settings" /></button></div>
       </aside>}
 
-      {showPrimarySidebar && <aside className="outline-pane" style={{ gridColumn: columnFor("outline"), gridRow: "1 / -1" }}>
-        <div className={`pane-resizer vertical edge-${layout.primarySidebar === "left" ? "right" : "left"}`} onPointerDown={(event) => beginPaneResize("sidebar", event)} />
-        <div className="pane-heading"><div><span className="eyebrow">MANUSCRIPT</span><h2>章・場面</h2></div><div className="pane-tools"><button className="icon-button import-button" title="TXT / Markdownを取り込む" onClick={importDocuments}><AppIcon name="import" /></button><button className="icon-button" title="章・場面を追加" onClick={addChapter}><AppIcon name="add" /></button></div></div>
-        <nav className="chapter-list" aria-label="章・場面">
-          {manifestChapters.map((item) => <button key={item.id} className={item.id === activeChapterId ? "chapter active" : "chapter"} onClick={() => void loadChapter(item.id)} disabled={busy}>
-            <span className="chapter-order">{String(item.order + 1).padStart(2, "0")}</span><span>{item.title}</span>
-          </button>)}
-        </nav>
-        <div className="outline-footer"><code title={project.root}>{project.root}</code><span>Markdown正本</span></div>
-      </aside>}
+      {renderSlot("primary")}
+      {renderSlot("secondary")}
 
-      <main className={`editor-pane manuscript-${theme} ${writingMode === "vertical-rl" ? "vertical" : "horizontal"}`} style={{ gridColumn: columnFor("editor"), gridRow: 1 }}>
+      <main data-editor-pane className={`editor-pane manuscript-${theme} ${writingMode === "vertical-rl" ? "vertical" : "horizontal"}`} style={{ gridColumn: columnFor("editor"), gridRow: 1 }}>
         <div className="editor-toolbar">
           <div><span className="eyebrow">{writingMode === "vertical-rl" ? "VERTICAL WRITING" : "WRITING"}</span><h1>{chapter?.chapter.title ?? "章を選択"}</h1></div>
           <div className="editor-actions"><button className="ghost compact" disabled={activeIndex <= 0} title="前へ移動" onClick={() => void moveChapter(-1)}>↑</button><button className="ghost compact" disabled={activeIndex < 0 || activeIndex >= manifestChapters.length - 1} title="後ろへ移動" onClick={() => void moveChapter(1)}>↓</button><button className="ghost compact action-with-icon" onClick={renameChapter}><AppIcon name="edit" />名前変更</button><button className="ghost compact danger-text" onClick={deleteChapter}>削除</button></div>
@@ -721,12 +983,33 @@ export function App(): ReactNode {
         <footer className="statusbar"><span>{stats.charactersNoWhitespace.toLocaleString()}字</span><span>{stats.lines.toLocaleString()}行</span><span>{stats.words.toLocaleString()}語</span><span>{writingMode === "vertical-rl" ? "縦書き" : "横書き"}</span></footer>
       </main>
 
-      {showInspector && <aside className={`inspector-pane dock-${layout.inspector}`} style={{ gridColumn: layout.inspector === "bottom" ? columnFor("editor") : columnFor("inspector"), gridRow: layout.inspector === "bottom" ? 2 : "1 / -1" }}>
-        <div className={`pane-resizer ${layout.inspector === "bottom" ? "horizontal edge-top" : `vertical edge-${layout.inspector === "left" ? "right" : "left"}`}`} onPointerDown={(event) => beginPaneResize(layout.inspector === "bottom" ? "bottom" : "inspector", event)} />
-        {inspectorContent}
-      </aside>}
+      {renderSlot("bottom")}
+      {dockDrag !== null && <div className="dock-layer" aria-hidden="true">
+        <span className={`dock-target side-left ${dockDrag.target.kind === "side-edge" && dockDrag.target.side === "left" ? "active" : ""}`}>左</span>
+        <span className={`dock-target side-right ${dockDrag.target.kind === "side-edge" && dockDrag.target.side === "right" ? "active" : ""}`}>右</span>
+        {!bottomVisible && <span className={`dock-target bottom ${dockDrag.target.kind === "bottom-edge" ? "active" : ""}`}>下部</span>}
+        <span className="dock-ghost" style={{ transform: `translate(${dockDrag.x + 14}px, ${dockDrag.y + 14}px)` }}>{VIEW_LABELS[dockDrag.view]}</span>
+      </div>}
     </div>
-  </div>{promptDialog}{settingsOverlay}</div>;
+    <span className="layout-announcement" aria-live="polite">{layoutAnnouncement}</span>
+  </div>{promptDialog}{settingsOverlay}{viewMenu !== null && <div
+    className="view-context-menu"
+    role="menu"
+    style={{ left: viewMenu.x, top: viewMenu.y }}
+    onKeyDown={(event) => { if (event.key === "Escape") setViewMenu(null); }}
+  >
+    <strong>{VIEW_LABELS[viewMenu.view]}</strong>
+    <button role="menuitem" onClick={() => moveMenuView("left")}>このビューを左へ</button>
+    <button role="menuitem" onClick={() => moveMenuView("right")}>このビューを右へ</button>
+    <button role="menuitem" onClick={() => moveMenuView("bottom")}>このビューを下部へ</button>
+    <span className="menu-separator" />
+    <button role="menuitem" disabled={menuSlot === "bottom"} onClick={() => moveMenuPanel("left")}>このパネルを左へ</button>
+    <button role="menuitem" disabled={menuSlot === "bottom"} onClick={() => moveMenuPanel("right")}>このパネルを右へ</button>
+    <button role="menuitem" onClick={() => reorderMenuView(-1)}>タブを左へ</button>
+    <button role="menuitem" onClick={() => reorderMenuView(1)}>タブを右へ</button>
+    <span className="menu-separator" />
+    <button role="menuitem" onClick={() => { commitLayout(defaultLayout(), "レイアウトを既定へ戻しました"); setViewMenu(null); }}>既定レイアウトへ戻す</button>
+  </div>}</div>;
 }
 
 function TextPrompt({ request, onCancel, onSubmit }: { request: TextPromptRequest; onCancel: () => void; onSubmit: (value: string) => void }): ReactNode {
@@ -758,29 +1041,23 @@ function Welcome({ appInfo, busy, error, colorTheme, onToggleTheme, onCreate, on
 
     <section className="welcome-hero">
       <div className="welcome-copy-block">
-        <p className="eyebrow">LOCAL-FIRST NOVEL STUDIO</p>
-        <h1>書くことだけに、<br /><span>深く潜れる場所。</span></h1>
-        <p className="welcome-copy">Markdownを正本に、章立て・保存点・AIの読み手をひとつの静かなワークベンチへ。画面の配置も配色も、あなたの書き方に合わせられます。</p>
+        <p className="eyebrow">01 / LOCAL-FIRST WRITING WORKSPACE</p>
+        <h1>物語を、<br /><span>書く。</span></h1>
+        <p className="welcome-copy">余計なものを脇へ置き、本文を真ん中に。Markdownの原稿、章立て、保存点、必要なときだけ呼べる読み手を、ひとつの静かな机にまとめました。</p>
         {error !== null && <p className="welcome-error">{error}</p>}
         <div className="welcome-actions">
-          <button className="home-action primary-card" disabled={busy} onClick={onCreate}><span className="home-action-icon"><AppIcon name="new" /></span><span><b>新しい作品</b><small>空白から物語を始める</small></span><span className="action-arrow">↗</span></button>
-          <button className="home-action" disabled={busy} onClick={onOpen}><span className="home-action-icon blue"><AppIcon name="open" /></span><span><b>作品を開く</b><small>既存のフォルダーを選択</small></span><span className="action-arrow">→</span></button>
-          <button className="home-action" onClick={onSettings}><span className="home-action-icon amber"><AppIcon name="layout" /></span><span><b>環境を整える</b><small>テーマと配置をカスタマイズ</small></span><span className="action-arrow">→</span></button>
+          <button className="home-action" disabled={busy} onClick={onCreate}><span className="home-action-number">01</span><span className="home-action-icon"><AppIcon name="new" /></span><span><b>新しい作品</b><small>空白から物語を始める</small></span><span className="action-arrow">↗</span></button>
+          <button className="home-action" disabled={busy} onClick={onOpen}><span className="home-action-number">02</span><span className="home-action-icon"><AppIcon name="open" /></span><span><b>作品を開く</b><small>既存のフォルダーを選択</small></span><span className="action-arrow">→</span></button>
+          <button className="home-action" onClick={onSettings}><span className="home-action-number">03</span><span className="home-action-icon"><AppIcon name="layout" /></span><span><b>作業環境を整える</b><small>テーマとパネル配置を変える</small></span><span className="action-arrow">→</span></button>
         </div>
       </div>
 
-      <div className="welcome-visual" aria-hidden="true">
-        <div className="visual-glow" />
-        <div className="visual-grid">
-          <span className="visual-tile tile-files"><AppIcon name="files" /></span>
-          <span className="visual-tile tile-lens"><AppIcon name="lens" /></span>
-          <span className="visual-tile tile-main"><AppIcon name="logo" size={118} tile /></span>
-          <span className="visual-tile tile-search"><AppIcon name="search" /></span>
-          <span className="visual-tile tile-history"><AppIcon name="history" /></span>
-          <span className="visual-tile tile-layout"><AppIcon name="layout" /></span>
-        </div>
-        <div className="visual-note"><span className="status-dot" /><span><b>Ready to write</b><small>ローカル保存・自動保存</small></span></div>
-      </div>
+      <aside className="welcome-art" aria-hidden="true">
+        <span className="welcome-art-index">NOVEL LENS / 2026</span>
+        <div className="welcome-art-mark"><AppIcon name="logo" size={196} tile /></div>
+        <p>THE MANUSCRIPT<br />BELONGS TO THE AUTHOR.</p>
+        <span className="welcome-art-side">LOCAL / MARKDOWN / PRIVATE</span>
+      </aside>
     </section>
 
     <footer className="welcome-footer"><div className="welcome-features"><span><AppIcon name="edit" /> 縦書き・横書き</span><span><AppIcon name="checkpoint" /> 自動保存と保存点</span><span><AppIcon name="lens" /> 根拠付きAIレンズ</span></div><small>Novel Lens {appInfo?.version ?? ""} · {appInfo?.platform ?? "desktop"}</small></footer>

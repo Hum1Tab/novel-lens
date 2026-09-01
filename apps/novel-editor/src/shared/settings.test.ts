@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { bindingFromKeyboardEvent, defaultUserSettings, mergeUserSettings, normalizeKeybinding, validateKeybindings } from "./settings.js";
+import { bindingFromKeyboardEvent, defaultUserSettings, mergeUserSettings, normalizeKeybinding, sanitizeUserSettings, serializeUserSettings, validateKeybindings } from "./settings.js";
 
 describe("desktop user settings", () => {
   it("keeps editable keybindings portable, unique, and away from editor-reserved keys", () => {
@@ -9,6 +9,18 @@ describe("desktop user settings", () => {
     expect(normalizeKeybinding("Ctrl+C")).toBeNull();
     expect(bindingFromKeyboardEvent({ key: "u", ctrlKey: true, metaKey: false, altKey: false, shiftKey: true })).toBe("Mod+Shift+U");
     expect(() => validateKeybindings({ ...settings.keybindings, "file.new": "Mod+O" })).toThrow(/重複/u);
-    expect(mergeUserSettings(settings, { general: { autoSaveDelayMs: 1500 }, keybindings: { "file.export": "Mod+Shift+E" } })).toMatchObject({ general: { autoSaveDelayMs: 1500 }, keybindings: { "file.export": "Mod+Shift+E" } });
+    expect(mergeUserSettings(settings, { general: { autoSaveDelayMs: 1500 }, keybindings: { "file.export": "Mod+Shift+R" } })).toMatchObject({ general: { autoSaveDelayMs: 1500 }, keybindings: { "file.export": "Mod+Shift+R" } });
+  });
+
+  it("migrates v1 layout fields and writes a v1 compatibility mirror", () => {
+    const settings = sanitizeUserSettings({ schemaVersion: 1, layout: { primarySidebar: "right", inspector: "bottom", showInspector: false } });
+    expect(settings.schemaVersion).toBe(2);
+    expect(settings.layout.primarySide).toBe("right");
+    expect(settings.layout.slots.bottom.visible).toBe(false);
+    const serialized = JSON.parse(serializeUserSettings(settings)) as { schemaVersion: number; layout: Record<string, unknown> };
+    expect(serialized.schemaVersion).toBe(2);
+    expect(serialized.layout["primarySidebar"]).toBe("right");
+    expect(serialized.layout["inspector"]).toBe("bottom");
+    expect(serialized.layout["slots"]).toBeDefined();
   });
 });

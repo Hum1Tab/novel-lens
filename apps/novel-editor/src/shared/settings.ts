@@ -1,3 +1,16 @@
+import {
+  defaultLayout,
+  mergeLayout,
+  migrateLayoutV1,
+  projectLayoutV1,
+  sanitizeLayout,
+  type LayoutPatch,
+  type LayoutPreferences
+} from "./layout.js";
+
+export { defaultLayout, EDITOR_MIN_WIDTH, EDITOR_SCROLL_MIN_HEIGHT, LAYOUT_LIMITS, mergeLayout, migrateLayoutV1, moveSlotToSide, moveView, placeViewOnSide, projectLayoutV1, sanitizeLayout, sideOf, slotOf, TOOL_VIEWS, VIEW_IDS } from "./layout.js";
+export type { DockSlotState, LayoutPatch, LayoutPreferences, PhysicalSide, SlotId, ViewId } from "./layout.js";
+
 export type AppCommandId =
   | "file.new"
   | "file.open"
@@ -12,9 +25,12 @@ export type AppCommandId =
   | "view.settings.accounts"
   | "view.settings.keyboard"
   | "view.settings.updates"
+  | "view.outline"
   | "view.search"
   | "view.lens"
   | "view.history"
+  | "view.zen"
+  | "layout.reset"
   | "updates.check";
 
 export interface CommandDefinition {
@@ -38,9 +54,12 @@ export const COMMAND_DEFINITIONS: readonly CommandDefinition[] = [
   { id: "view.settings.accounts", label: "アカウント設定を開く", category: "設定", defaultBinding: "" },
   { id: "view.settings.keyboard", label: "キーボード ショートカットを開く", category: "設定", defaultBinding: "" },
   { id: "view.settings.updates", label: "更新設定を開く", category: "設定", defaultBinding: "" },
+  { id: "view.outline", label: "章アウトライン", category: "表示", defaultBinding: "Mod+Shift+E" },
   { id: "view.search", label: "作品内検索", category: "表示", defaultBinding: "Mod+F" },
   { id: "view.lens", label: "編集レンズ", category: "表示", defaultBinding: "Mod+Shift+L" },
   { id: "view.history", label: "履歴", category: "表示", defaultBinding: "Mod+Shift+H" },
+  { id: "view.zen", label: "集中モード", category: "表示", defaultBinding: "Mod+K" },
+  { id: "layout.reset", label: "レイアウトを既定へ戻す", category: "表示", defaultBinding: "" },
   { id: "updates.check", label: "更新を確認", category: "更新", defaultBinding: "Mod+Shift+U" }
 ] as const;
 
@@ -57,24 +76,12 @@ export interface EditorPreferences {
 
 export interface AppearancePreferences {
   colorTheme: "system" | "light" | "dark";
-  accent: "violet" | "blue" | "amber";
+  accent: "forest" | "gold" | "ink";
   density: "comfortable" | "compact";
 }
 
-export interface LayoutPreferences {
-  primarySidebar: "left" | "right";
-  inspector: "left" | "right" | "bottom";
-  activityBar: "left" | "right";
-  showPrimarySidebar: boolean;
-  showInspector: boolean;
-  sidebarWidth: number;
-  inspectorWidth: number;
-  bottomPanelHeight: number;
-  zenMode: boolean;
-}
-
 export interface UserSettings {
-  schemaVersion: 1;
+  schemaVersion: 2;
   general: { autoSaveDelayMs: number };
   appearance: AppearancePreferences;
   layout: LayoutPreferences;
@@ -87,7 +94,7 @@ export interface UserSettings {
 export type UserSettingsPatch = {
   general?: Partial<UserSettings["general"]>;
   appearance?: Partial<UserSettings["appearance"]>;
-  layout?: Partial<UserSettings["layout"]>;
+  layout?: LayoutPatch;
   editor?: Partial<UserSettings["editor"]>;
   ai?: Partial<UserSettings["ai"]>;
   updates?: Partial<UserSettings["updates"]>;
@@ -103,10 +110,10 @@ export function defaultKeybindings(): KeybindingMap {
 
 export function defaultUserSettings(): UserSettings {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     general: { autoSaveDelayMs: 800 },
-    appearance: { colorTheme: "system", accent: "violet", density: "comfortable" },
-    layout: { primarySidebar: "left", inspector: "right", activityBar: "left", showPrimarySidebar: true, showInspector: true, sidebarWidth: 252, inspectorWidth: 380, bottomPanelHeight: 310, zenMode: false },
+    appearance: { colorTheme: "light", accent: "forest", density: "comfortable" },
+    layout: defaultLayout(),
     editor: { writingMode: "horizontal", theme: "paper", font: DEFAULT_FONT, fontSize: 18, lineHeight: 2, width: 760 },
     ai: { defaultProvider: "codex", codexModel: "gpt-5.6-luna", openaiModel: "gpt-5.6-luna" },
     updates: { checkOnStartup: true },
@@ -181,25 +188,18 @@ export function sanitizeUserSettings(input: unknown): UserSettings {
   }
   try { validateKeybindings(keybindings); }
   catch { return defaults; }
+  const isV2Layout = (typeof source["schemaVersion"] === "number" && source["schemaVersion"] >= 2) || Object.prototype.hasOwnProperty.call(layout, "slots");
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     general: { autoSaveDelayMs: finiteNumber(general["autoSaveDelayMs"], defaults.general.autoSaveDelayMs, 250, 5000) },
     appearance: {
       colorTheme: appearance["colorTheme"] === "light" || appearance["colorTheme"] === "dark" || appearance["colorTheme"] === "system" ? appearance["colorTheme"] : defaults.appearance.colorTheme,
-      accent: appearance["accent"] === "blue" || appearance["accent"] === "amber" || appearance["accent"] === "violet" ? appearance["accent"] : defaults.appearance.accent,
+      accent: appearance["accent"] === "forest" || appearance["accent"] === "gold" || appearance["accent"] === "ink"
+        ? appearance["accent"]
+        : appearance["accent"] === "amber" ? "gold" : appearance["accent"] === "blue" ? "ink" : appearance["accent"] === "violet" ? "forest" : defaults.appearance.accent,
       density: appearance["density"] === "compact" || appearance["density"] === "comfortable" ? appearance["density"] : defaults.appearance.density
     },
-    layout: {
-      primarySidebar: layout["primarySidebar"] === "right" ? "right" : "left",
-      inspector: layout["inspector"] === "left" || layout["inspector"] === "bottom" ? layout["inspector"] : "right",
-      activityBar: layout["activityBar"] === "right" ? "right" : "left",
-      showPrimarySidebar: typeof layout["showPrimarySidebar"] === "boolean" ? layout["showPrimarySidebar"] : defaults.layout.showPrimarySidebar,
-      showInspector: typeof layout["showInspector"] === "boolean" ? layout["showInspector"] : defaults.layout.showInspector,
-      sidebarWidth: finiteNumber(layout["sidebarWidth"], defaults.layout.sidebarWidth, 180, 420),
-      inspectorWidth: finiteNumber(layout["inspectorWidth"], defaults.layout.inspectorWidth, 280, 680),
-      bottomPanelHeight: finiteNumber(layout["bottomPanelHeight"], defaults.layout.bottomPanelHeight, 200, 560),
-      zenMode: typeof layout["zenMode"] === "boolean" ? layout["zenMode"] : defaults.layout.zenMode
-    },
+    layout: isV2Layout ? sanitizeLayout(layout) : migrateLayoutV1(layout),
     editor: {
       writingMode: editor["writingMode"] === "vertical-rl" ? "vertical-rl" : editor["writingMode"] === "horizontal" ? "horizontal" : defaults.editor.writingMode,
       theme: editor["theme"] === "dark" || editor["theme"] === "sepia" || editor["theme"] === "paper" ? editor["theme"] : defaults.editor.theme,
@@ -220,10 +220,10 @@ export function sanitizeUserSettings(input: unknown): UserSettings {
 
 export function mergeUserSettings(current: UserSettings, patch: UserSettingsPatch): UserSettings {
   const candidate = sanitizeUserSettings({
-    schemaVersion: 1,
+    schemaVersion: 2,
     general: { ...current.general, ...patch.general },
     appearance: { ...current.appearance, ...patch.appearance },
-    layout: { ...current.layout, ...patch.layout },
+    layout: mergeLayout(current.layout, patch.layout),
     editor: { ...current.editor, ...patch.editor },
     ai: { ...current.ai, ...patch.ai },
     updates: { ...current.updates, ...patch.updates },
@@ -231,6 +231,12 @@ export function mergeUserSettings(current: UserSettings, patch: UserSettingsPatc
   });
   validateKeybindings(candidate.keybindings);
   return candidate;
+}
+
+/** Serialize v2 settings and include a legacy layout mirror for one release. */
+export function serializeUserSettings(settings: UserSettings): string {
+  const layout = { ...settings.layout, ...projectLayoutV1(settings.layout) };
+  return `${JSON.stringify({ ...settings, schemaVersion: 2, layout }, null, 2)}\n`;
 }
 
 export function toElectronAccelerator(binding: string): string | undefined {

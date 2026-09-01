@@ -277,9 +277,17 @@ function registerIpc(): void {
     const request = { ...(input as LensRunInput) } as LensExecutionInput;
     delete (request as LensExecutionInput).apiKey;
     if (request.provider === "openai") request.apiKey = connections.requireOpenAIKey();
-    return runLens(request);
+    return runLens(request, (modelId, prompt, outputSchema) => connections.runCodex(modelId, prompt, outputSchema));
   });
   handle("connections:status", () => connections.refreshStatus());
+  handle("connections:codex-login", () => connections.loginCodex(async (target) => {
+    const url = new URL(target);
+    const trusted = url.protocol === "https:" && (url.hostname === "chatgpt.com" || url.hostname.endsWith(".chatgpt.com") || url.hostname === "openai.com" || url.hostname.endsWith(".openai.com"));
+    if (!trusted) throw new Error("ChatGPT認証先URLを確認できません。");
+    await shell.openExternal(url.toString(), { activate: true });
+  }));
+  handle("connections:codex-logout", () => connections.logoutCodex());
+  handle("connections:codex-models-refresh", () => connections.refreshCodexModels());
   handle("connections:openai-connect", (apiKey) => {
     if (typeof apiKey !== "string") throw new Error("OpenAI APIキーを確認してください。");
     return connections.connectOpenAI(apiKey);
@@ -343,7 +351,7 @@ function installMenu(): void {
       ]
     },
     { label: "編集", submenu: [{ role: "undo" }, { role: "redo" }, { type: "separator" }, { role: "cut" }, { role: "copy" }, { role: "paste" }, { role: "selectAll" }] },
-    { label: "設定", submenu: [commandMenuItem("view.settings", "設定を開く…"), { type: "separator" }, commandMenuItem("view.settings.editor"), commandMenuItem("view.settings.ai"), commandMenuItem("view.settings.accounts"), commandMenuItem("view.settings.keyboard"), commandMenuItem("view.settings.updates")] },
+    { label: "設定", submenu: [commandMenuItem("view.settings", "設定を開く…"), { type: "separator" }, commandMenuItem("view.settings.appearance"), commandMenuItem("view.settings.layout"), commandMenuItem("view.settings.editor"), commandMenuItem("view.settings.ai"), commandMenuItem("view.settings.accounts"), commandMenuItem("view.settings.keyboard"), commandMenuItem("view.settings.updates")] },
     { label: "表示", submenu: [commandMenuItem("view.lens"), commandMenuItem("view.search"), commandMenuItem("view.history"), { type: "separator" }, { role: "togglefullscreen" }, { role: "resetZoom" }, { role: "zoomIn" }, { role: "zoomOut" }] },
     { label: "ヘルプ", submenu: [commandMenuItem("updates.check"), { label: "GitHub Releasesを開く", click: () => { void openExternalPage("latest-release"); } }] }
   ];
@@ -399,6 +407,7 @@ else {
     userSettings = await settingsStore.load();
     updateManager = new UpdateManager(app.getVersion(), process.platform, process.arch, (status) => mainWindow?.webContents.send("updates:status", status), join(app.getPath("temp"), "Novel-Lens-updates"));
     await connections.initializeOpenAI(new SecureCredentialStore(join(app.getPath("userData"), "openai-credential.bin")));
+    connections.initializeCodex(app.getVersion(), join(app.getPath("temp"), "Novel-Lens-Codex"));
     registerIpc();
     installMenu();
     await createWindow();

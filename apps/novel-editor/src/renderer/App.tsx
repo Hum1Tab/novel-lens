@@ -1,11 +1,12 @@
 import { getRole, ROLE_REGISTRY, textStats } from "@novel-lens/editor-core";
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 
 import { defaultUserSettings, type UserSettingsPatch } from "../shared/settings.js";
 import type {
   AppInfo,
   ChapterDocument,
   CheckpointEntry,
+  CodexModelOption,
   ConnectionStatus,
   LensFinding,
   LensMessage,
@@ -18,6 +19,7 @@ import type {
   UpdateStatus
 } from "../shared/types.js";
 import { SettingsView, type SettingsCategory } from "./SettingsView.js";
+import { AppIcon } from "./AppIcon.js";
 
 type InspectorTab = "lens" | "search" | "history";
 type SaveState = "saved" | "dirty" | "saving" | "error";
@@ -37,6 +39,7 @@ const ROLE_IDS = Object.keys(ROLE_REGISTRY) as RoleId[];
 const DEFAULT_QUERY = "この範囲で、作者が見直す価値のある箇所を根拠付きで教えてください。";
 const EMPTY_THREADS = (): Record<RoleId, LensMessage[]> => ({ "first-reader": [], editor: [], critic: [], consistency: [], setting: [] });
 const DEFAULT_CONNECTIONS: ConnectionStatus = {
+  codex: { installed: false, connected: false, state: "unavailable", message: "Codex実行環境をまだ確認していません。", email: null, planType: null, models: [], modelsUpdatedAt: null, usedPercent: null, resetsAt: null },
   openai: { connected: false, state: "disconnected", storage: "none", message: "OpenAI APIは未接続です。", verifiedAt: null },
   github: { cliInstalled: false, connected: false, state: "unavailable", message: "GitHub CLIの状態をまだ確認していません。" }
 };
@@ -59,6 +62,7 @@ function settingNumber(settings: ProjectSettings, key: string, fallback: number)
 export function App(): ReactNode {
   const [appInfo, setAppInfo] = useState<AppInfo | null>(null);
   const [userSettings, setUserSettings] = useState(defaultUserSettings);
+  const [systemDark, setSystemDark] = useState(() => window.matchMedia?.("(prefers-color-scheme: dark)").matches ?? true);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsCategory, setSettingsCategory] = useState<SettingsCategory>("general");
   const [connections, setConnections] = useState<ConnectionStatus>(DEFAULT_CONNECTIONS);
@@ -79,7 +83,7 @@ export function App(): ReactNode {
   const [checkpoints, setCheckpoints] = useState<CheckpointEntry[]>([]);
   const [role, setRole] = useState<RoleId>("first-reader");
   const [provider, setProvider] = useState<LensProviderId>("mock");
-  const [modelId, setModelId] = useState("gpt-5-mini");
+  const [modelId, setModelId] = useState("gpt-5.6-luna");
   const [lensQuery, setLensQuery] = useState(DEFAULT_QUERY);
   const [scopeMode, setScopeMode] = useState<ScopeMode>("through-current");
   const [scopeApproved, setScopeApproved] = useState(false);
@@ -90,6 +94,14 @@ export function App(): ReactNode {
   const editorRef = useRef<HTMLTextAreaElement>(null);
   const promptResolverRef = useRef<((value: string | null) => void) | null>(null);
   const promptSequenceRef = useRef(0);
+
+  useEffect(() => {
+    const query = window.matchMedia?.("(prefers-color-scheme: dark)");
+    if (query === undefined) return;
+    const onChange = (event: MediaQueryListEvent): void => setSystemDark(event.matches);
+    query.addEventListener("change", onChange);
+    return () => query.removeEventListener("change", onChange);
+  }, []);
 
   const requestText = useCallback((options: TextPromptOptions): Promise<string | null> => {
     promptResolverRef.current?.(null);
@@ -112,15 +124,25 @@ export function App(): ReactNode {
 
   useEffect(() => {
     void window.novelLens.appInfo().then(setAppInfo).catch(() => undefined);
+    void window.novelLens.connectionStatus().then(setConnections).catch(() => undefined);
     void window.novelLens.getUserSettings().then((loaded) => {
       setUserSettings(loaded);
       setProvider(loaded.ai.defaultProvider);
-      setModelId(loaded.ai.openaiModel);
+      setModelId(loaded.ai.defaultProvider === "openai" ? loaded.ai.openaiModel : loaded.ai.codexModel);
     }).catch(() => undefined);
     const removeUpdateListener = window.novelLens.onUpdateStatus(setUpdateStatus);
     const removeConnectionListener = window.novelLens.onConnectionStatus(setConnections);
     return () => { removeUpdateListener(); removeConnectionListener(); };
   }, []);
+
+  useEffect(() => {
+    if (provider !== "codex" || connections.codex.models.length === 0) return;
+    if (connections.codex.models.some((model) => model.id === modelId)) return;
+    const fallback = connections.codex.models.find((model) => model.id === "gpt-5.6-luna") ?? connections.codex.models.find((model) => model.isDefault) ?? connections.codex.models[0];
+    if (fallback === undefined) return;
+    setModelId(fallback.id);
+    void window.novelLens.updateUserSettings({ ai: { codexModel: fallback.id } }).then(setUserSettings).catch(() => undefined);
+  }, [connections.codex.models, modelId, provider]);
 
   const manifestChapters = useMemo(() => [...(project?.manifest.chapters ?? [])].sort((a, b) => a.order - b.order), [project]);
   const activeIndex = manifestChapters.findIndex((item) => item.id === activeChapterId);
@@ -132,6 +154,8 @@ export function App(): ReactNode {
   const editorFontSize = settingNumber(settings, "fontSize", userSettings.editor.fontSize);
   const theme = settings["theme"] === "dark" || settings["theme"] === "sepia" || settings["theme"] === "paper" ? settings["theme"] : userSettings.editor.theme;
   const stats = useMemo(() => textStats(text), [text]);
+  const colorTheme = userSettings.appearance.colorTheme === "system" ? (systemDark ? "dark" : "light") : userSettings.appearance.colorTheme;
+  const shellClass = `app-shell ui-${colorTheme} accent-${userSettings.appearance.accent} density-${userSettings.appearance.density}`;
 
   const scopeChapters = useMemo(() => {
     if (activeIndex < 0) return [];
@@ -389,9 +413,61 @@ export function App(): ReactNode {
       const next = await window.novelLens.updateUserSettings(patch);
       setUserSettings(next);
       if (patch.ai?.defaultProvider !== undefined) setProvider(next.ai.defaultProvider);
-      if (patch.ai?.openaiModel !== undefined) setModelId(next.ai.openaiModel);
+      if (patch.ai?.codexModel !== undefined) setModelId(next.ai.codexModel);
+      else if (patch.ai?.openaiModel !== undefined) setModelId(next.ai.openaiModel);
     } catch (cause) { setError(errorText(cause)); throw cause; }
   }, []);
+
+  const toggleColorTheme = useCallback((): void => {
+    void updateUserSettings({ appearance: { colorTheme: colorTheme === "dark" ? "light" : "dark" } });
+  }, [colorTheme, updateUserSettings]);
+
+  const toggleLayoutFlag = useCallback((key: "showPrimarySidebar" | "showInspector" | "zenMode"): void => {
+    void updateUserSettings({ layout: { [key]: !userSettings.layout[key] } });
+  }, [updateUserSettings, userSettings.layout]);
+
+  const revealInspector = useCallback((tab: InspectorTab): void => {
+    setSettingsOpen(false);
+    setInspectorTab(tab);
+    if (!userSettings.layout.showInspector || userSettings.layout.zenMode) {
+      void updateUserSettings({ layout: { showInspector: true, zenMode: false } });
+    }
+  }, [updateUserSettings, userSettings.layout.showInspector, userSettings.layout.zenMode]);
+
+  const beginPaneResize = useCallback((kind: "sidebar" | "inspector" | "bottom", event: ReactPointerEvent<HTMLDivElement>): void => {
+    event.preventDefault();
+    const { layout } = userSettings;
+    const startX = event.clientX;
+    const startY = event.clientY;
+    const startValue = kind === "sidebar" ? layout.sidebarWidth : kind === "inspector" ? layout.inspectorWidth : layout.bottomPanelHeight;
+    let latest = startValue;
+    const onMove = (moveEvent: PointerEvent): void => {
+      if (kind === "bottom") latest = Math.max(200, Math.min(560, startValue - (moveEvent.clientY - startY)));
+      else if (kind === "sidebar") {
+        const direction = layout.primarySidebar === "left" ? 1 : -1;
+        latest = Math.max(180, Math.min(420, startValue + (moveEvent.clientX - startX) * direction));
+      } else {
+        const direction = layout.inspector === "left" ? 1 : -1;
+        latest = Math.max(280, Math.min(680, startValue + (moveEvent.clientX - startX) * direction));
+      }
+      setUserSettings((current) => ({
+        ...current,
+        layout: {
+          ...current.layout,
+          ...(kind === "sidebar" ? { sidebarWidth: latest } : kind === "inspector" ? { inspectorWidth: latest } : { bottomPanelHeight: latest })
+        }
+      }));
+    };
+    const onUp = (): void => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      document.body.classList.remove("is-resizing");
+      void updateUserSettings({ layout: kind === "sidebar" ? { sidebarWidth: latest } : kind === "inspector" ? { inspectorWidth: latest } : { bottomPanelHeight: latest } });
+    };
+    document.body.classList.add("is-resizing");
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp, { once: true });
+  }, [updateUserSettings, userSettings]);
 
   const openSettings = useCallback((category: SettingsCategory = "general"): void => {
     setSettingsCategory(category);
@@ -410,6 +486,19 @@ export function App(): ReactNode {
 
   const disconnectOpenAI = useCallback(async (): Promise<void> => {
     setConnections(await window.novelLens.disconnectOpenAI());
+  }, []);
+
+  const loginCodex = useCallback(async (): Promise<void> => {
+    try { setConnections(await window.novelLens.loginCodex()); }
+    catch (cause) { await refreshConnections(); throw cause; }
+  }, [refreshConnections]);
+
+  const logoutCodex = useCallback(async (): Promise<void> => {
+    setConnections(await window.novelLens.logoutCodex());
+  }, []);
+
+  const refreshCodexModels = useCallback(async (): Promise<void> => {
+    setConnections(await window.novelLens.refreshCodexModels());
   }, []);
 
   const loginGitHub = useCallback(async (): Promise<void> => {
@@ -474,20 +563,44 @@ export function App(): ReactNode {
     else if (action === "history.checkpoint") void createCheckpoint();
     else if (action === "file.export") void exportProject();
     else if (action === "view.settings") openSettings("general");
+    else if (action === "view.settings.appearance") openSettings("appearance");
+    else if (action === "view.settings.layout") openSettings("layout");
     else if (action === "view.settings.editor") openSettings("editor");
     else if (action === "view.settings.ai") openSettings("ai");
     else if (action === "view.settings.accounts") openSettings("accounts");
     else if (action === "view.settings.keyboard") openSettings("keyboard");
     else if (action === "view.settings.updates") openSettings("updates");
-    else if (action === "view.search") { setSettingsOpen(false); setInspectorTab("search"); }
-    else if (action === "view.lens") { setSettingsOpen(false); setInspectorTab("lens"); }
-    else if (action === "view.history") { setSettingsOpen(false); setInspectorTab("history"); }
+    else if (action === "view.search") revealInspector("search");
+    else if (action === "view.lens") revealInspector("lens");
+    else if (action === "view.history") revealInspector("history");
     else if (action === "updates.check") { openSettings("updates"); void checkUpdates(); }
-  }), [checkUpdates, createCheckpoint, createProject, exportProject, openProject, openSettings, saveNow]);
+  }), [checkUpdates, createCheckpoint, createProject, exportProject, openProject, openSettings, revealInspector, saveNow]);
 
   useEffect(() => window.novelLens.onBeforeClose(saveNow), [saveNow]);
 
-  const editorStyle = {
+  const layout = userSettings.layout;
+  const showPrimarySidebar = layout.showPrimarySidebar && !layout.zenMode;
+  const showInspector = layout.showInspector && !layout.zenMode;
+  type WorkbenchArea = "activity" | "outline" | "editor" | "inspector";
+  const leftAreas: WorkbenchArea[] = [];
+  const rightAreas: WorkbenchArea[] = [];
+  if (showPrimarySidebar) (layout.primarySidebar === "left" ? leftAreas : rightAreas).push("outline");
+  if (showInspector && layout.inspector !== "bottom") (layout.inspector === "left" ? leftAreas : rightAreas).push("inspector");
+  if (rightAreas.includes("outline") && rightAreas.includes("inspector")) rightAreas.reverse();
+  const columnAreas: WorkbenchArea[] = [
+    ...(layout.zenMode || layout.activityBar !== "left" ? [] : ["activity" as const]),
+    ...leftAreas,
+    "editor",
+    ...rightAreas,
+    ...(layout.zenMode || layout.activityBar !== "right" ? [] : ["activity" as const])
+  ];
+  const columnFor = (area: WorkbenchArea): number => columnAreas.indexOf(area) + 1;
+  const bottomInspector = showInspector && layout.inspector === "bottom";
+  const workspaceStyle = {
+    gridTemplateColumns: columnAreas.map((area) => area === "activity" ? "52px" : area === "outline" ? `${layout.sidebarWidth}px` : area === "inspector" ? `${layout.inspectorWidth}px` : "minmax(0, 1fr)").join(" "),
+    gridTemplateRows: bottomInspector ? `minmax(0, 1fr) ${layout.bottomPanelHeight}px` : "minmax(0, 1fr)"
+  } as CSSProperties;
+  const shellStyle = {
     "--editor-font": editorFont,
     "--editor-width": `${editorWidth}px`,
     "--editor-line-height": editorLineHeight,
@@ -514,6 +627,9 @@ export function App(): ReactNode {
     onUpdateProject={updateProjectSettings}
     onResetProjectSetting={resetProjectSetting}
     onRefreshConnections={refreshConnections}
+    onLoginCodex={loginCodex}
+    onLogoutCodex={logoutCodex}
+    onRefreshCodexModels={refreshCodexModels}
     onConnectOpenAI={connectOpenAI}
     onDisconnectOpenAI={disconnectOpenAI}
     onLoginGitHub={loginGitHub}
@@ -524,42 +640,69 @@ export function App(): ReactNode {
     onOpenExternal={openExternalPage}
   /> : null;
 
-  if (project === null) return <>
-    <Welcome appInfo={appInfo} busy={busy} error={error} onCreate={createProject} onOpen={openProject} onSettings={() => openSettings("general")} />
+  if (project === null) return <div className={shellClass} style={shellStyle}>
+    <Welcome appInfo={appInfo} busy={busy} error={error} colorTheme={colorTheme} onToggleTheme={toggleColorTheme} onCreate={createProject} onOpen={openProject} onSettings={() => openSettings("appearance")} />
     {promptDialog}
     {settingsOverlay}
+  </div>;
+
+  const inspectorContent = <>
+    <div className="tabs" role="tablist">
+      {(["lens", "search", "history"] as const).map((tab) => <button key={tab} className={inspectorTab === tab ? "active" : ""} onClick={() => setInspectorTab(tab)}>{tab === "lens" ? "レンズ" : tab === "search" ? "検索" : "履歴"}</button>)}
+    </div>
+    {inspectorTab === "lens" && <LensPanel
+      role={role} setRole={setRole} provider={provider} setProvider={(next) => { setProvider(next); setModelId(next === "codex" ? userSettings.ai.codexModel : next === "openai" ? userSettings.ai.openaiModel : "offline-mock-v0.1"); }} modelId={modelId} setModelId={(value) => { setModelId(value); if (provider === "codex") void updateUserSettings({ ai: { codexModel: value } }); }} codexModels={connections.codex.models} codexConnected={connections.codex.connected} openAIConnected={connections.openai.connected} onOpenSettings={() => openSettings("ai")}
+      query={lensQuery} setQuery={setLensQuery} scopeMode={scopeMode} setScopeMode={setScopeMode} scopeTitles={scopeChapters.map((item) => item.title)}
+      approved={scopeApproved} setApproved={setScopeApproved} thread={threads[role]} result={lensResult?.role === role ? lensResult : null}
+      running={lensBusy} onRun={invokeLens} onClear={() => { setThreads((current) => ({ ...current, [role]: [] })); setLensResult(null); }} onFinding={jumpToFinding}
+    />}
+    {inspectorTab === "search" && <SearchPanel query={searchQuery} setQuery={setSearchQuery} hits={searchHits} onSearch={runSearch} onHit={(hit) => void loadChapter(hit.chapterId, hit)} />}
+    {inspectorTab === "history" && <HistoryPanel entries={checkpoints} onCreate={createCheckpoint} onRestore={restoreCheckpoint} onVariation={createVariation} />}
   </>;
 
-  return <><div className={`app theme-${theme}`} style={editorStyle}>
+  return <div className={shellClass} style={shellStyle}><div className={`app ${layout.zenMode ? "zen-mode" : ""}`}>
     <header className="topbar">
-      <div className="brand"><span className="brand-mark">NL</span><div><b>Novel Lens</b><button className="project-title" onClick={renameProject} title="作品名を変更">{project.manifest.title}</button></div></div>
+      <div className="brand"><span className="brand-mark"><AppIcon name="logo" size={22} /></span><div><b>Novel Lens</b><button className="project-title" onClick={renameProject} title="作品名を変更">{project.manifest.title}</button></div></div>
       <div className="top-actions">
-        <button className="ghost" onClick={openProject}>作品を開く</button>
-        <button className="ghost" onClick={createCheckpoint}>保存点</button>
-        <button className="ghost" onClick={createVariation}>別案</button>
-        <button className="ghost" onClick={exportProject}>書き出し</button>
-        <button className="ghost settings-trigger" onClick={() => openSettings("general")} aria-label="設定を開く" title="設定">⚙</button>
+        <button className="ghost action-with-icon" onClick={openProject}><AppIcon name="open" />作品を開く</button>
+        <button className="ghost action-with-icon" onClick={createCheckpoint}><AppIcon name="checkpoint" />保存点</button>
+        <button className="ghost action-with-icon wide-action" onClick={createVariation}><AppIcon name="files" />別案</button>
+        <button className="ghost action-with-icon wide-action" onClick={exportProject}><AppIcon name="export" />書き出し</button>
+        <button className={`icon-button top-icon ${layout.zenMode ? "active" : ""}`} onClick={() => toggleLayoutFlag("zenMode")} aria-label="集中モード" title="集中モード"><AppIcon name="focus" /></button>
+        <button className="icon-button top-icon" onClick={toggleColorTheme} aria-label="配色を切り替える" title="配色を切り替える"><AppIcon name={colorTheme === "dark" ? "sun" : "moon"} /></button>
+        <button className="icon-button top-icon" onClick={() => openSettings("layout")} aria-label="レイアウト設定を開く" title="レイアウト設定"><AppIcon name="layout" /></button>
         <span className={`save-indicator ${saveState}`}>{saveState === "saved" ? "保存済み" : saveState === "saving" ? "保存中…" : saveState === "dirty" ? "未保存" : "保存エラー"}</span>
       </div>
     </header>
 
-    {(error !== null || notice !== null) && <div className={`banner ${error !== null ? "error" : "notice"}`} role="status"><span>{error ?? notice}</span><button aria-label="閉じる" onClick={clearMessages}>×</button></div>}
+    {(error !== null || notice !== null) && <div className={`banner ${error !== null ? "error" : "notice"}`} role="status"><span>{error ?? notice}</span><button aria-label="閉じる" onClick={clearMessages}><AppIcon name="close" /></button></div>}
 
-    <div className="workspace">
-      <aside className="outline-pane">
-        <div className="pane-heading"><div><span className="eyebrow">MANUSCRIPT</span><h2>章・場面</h2></div><div className="pane-tools"><button className="icon-button import-button" title="TXT / Markdownを取り込む" onClick={importDocuments}>⇩</button><button className="icon-button" title="章・場面を追加" onClick={addChapter}>＋</button></div></div>
+    <div className="workspace" style={workspaceStyle}>
+      {!layout.zenMode && <aside className="activity-bar" style={{ gridColumn: columnFor("activity"), gridRow: "1 / -1" }} aria-label="表示切り替え">
+        <div className="activity-main">
+          <button className={`activity-button ${showPrimarySidebar ? "active" : ""}`} onClick={() => toggleLayoutFlag("showPrimarySidebar")} title="章・場面"><AppIcon name="files" /></button>
+          <button className={`activity-button ${showInspector && inspectorTab === "lens" ? "active" : ""}`} onClick={() => revealInspector("lens")} title="編集レンズ"><AppIcon name="lens" /></button>
+          <button className={`activity-button ${showInspector && inspectorTab === "search" ? "active" : ""}`} onClick={() => revealInspector("search")} title="検索"><AppIcon name="search" /></button>
+          <button className={`activity-button ${showInspector && inspectorTab === "history" ? "active" : ""}`} onClick={() => revealInspector("history")} title="履歴"><AppIcon name="history" /></button>
+        </div>
+        <div className="activity-foot"><button className="activity-button" onClick={() => openSettings("layout")} title="レイアウト設定"><AppIcon name="layout" /></button><button className="activity-button" onClick={() => openSettings("general")} title="設定"><AppIcon name="settings" /></button></div>
+      </aside>}
+
+      {showPrimarySidebar && <aside className="outline-pane" style={{ gridColumn: columnFor("outline"), gridRow: "1 / -1" }}>
+        <div className={`pane-resizer vertical edge-${layout.primarySidebar === "left" ? "right" : "left"}`} onPointerDown={(event) => beginPaneResize("sidebar", event)} />
+        <div className="pane-heading"><div><span className="eyebrow">MANUSCRIPT</span><h2>章・場面</h2></div><div className="pane-tools"><button className="icon-button import-button" title="TXT / Markdownを取り込む" onClick={importDocuments}><AppIcon name="import" /></button><button className="icon-button" title="章・場面を追加" onClick={addChapter}><AppIcon name="add" /></button></div></div>
         <nav className="chapter-list" aria-label="章・場面">
           {manifestChapters.map((item) => <button key={item.id} className={item.id === activeChapterId ? "chapter active" : "chapter"} onClick={() => void loadChapter(item.id)} disabled={busy}>
             <span className="chapter-order">{String(item.order + 1).padStart(2, "0")}</span><span>{item.title}</span>
           </button>)}
         </nav>
         <div className="outline-footer"><code title={project.root}>{project.root}</code><span>Markdown正本</span></div>
-      </aside>
+      </aside>}
 
-      <main className={`editor-pane ${writingMode === "vertical-rl" ? "vertical" : "horizontal"}`}>
+      <main className={`editor-pane manuscript-${theme} ${writingMode === "vertical-rl" ? "vertical" : "horizontal"}`} style={{ gridColumn: columnFor("editor"), gridRow: 1 }}>
         <div className="editor-toolbar">
           <div><span className="eyebrow">{writingMode === "vertical-rl" ? "VERTICAL WRITING" : "WRITING"}</span><h1>{chapter?.chapter.title ?? "章を選択"}</h1></div>
-          <div className="editor-actions"><button className="ghost compact" disabled={activeIndex <= 0} title="前へ移動" onClick={() => void moveChapter(-1)}>↑</button><button className="ghost compact" disabled={activeIndex < 0 || activeIndex >= manifestChapters.length - 1} title="後ろへ移動" onClick={() => void moveChapter(1)}>↓</button><button className="ghost compact" onClick={renameChapter}>名前変更</button><button className="ghost compact danger-text" onClick={deleteChapter}>削除</button></div>
+          <div className="editor-actions"><button className="ghost compact" disabled={activeIndex <= 0} title="前へ移動" onClick={() => void moveChapter(-1)}>↑</button><button className="ghost compact" disabled={activeIndex < 0 || activeIndex >= manifestChapters.length - 1} title="後ろへ移動" onClick={() => void moveChapter(1)}>↓</button><button className="ghost compact action-with-icon" onClick={renameChapter}><AppIcon name="edit" />名前変更</button><button className="ghost compact danger-text" onClick={deleteChapter}>削除</button></div>
         </div>
         <div className="editor-scroll">
           <textarea
@@ -578,21 +721,12 @@ export function App(): ReactNode {
         <footer className="statusbar"><span>{stats.charactersNoWhitespace.toLocaleString()}字</span><span>{stats.lines.toLocaleString()}行</span><span>{stats.words.toLocaleString()}語</span><span>{writingMode === "vertical-rl" ? "縦書き" : "横書き"}</span></footer>
       </main>
 
-      <aside className="inspector-pane">
-        <div className="tabs" role="tablist">
-          {(["lens", "search", "history"] as const).map((tab) => <button key={tab} className={inspectorTab === tab ? "active" : ""} onClick={() => setInspectorTab(tab)}>{tab === "lens" ? "レンズ" : tab === "search" ? "検索" : "履歴"}</button>)}
-        </div>
-        {inspectorTab === "lens" && <LensPanel
-          role={role} setRole={setRole} provider={provider} setProvider={setProvider} modelId={modelId} setModelId={setModelId} openAIConnected={connections.openai.connected} onOpenSettings={() => openSettings("ai")}
-          query={lensQuery} setQuery={setLensQuery} scopeMode={scopeMode} setScopeMode={setScopeMode} scopeTitles={scopeChapters.map((item) => item.title)}
-          approved={scopeApproved} setApproved={setScopeApproved} thread={threads[role]} result={lensResult?.role === role ? lensResult : null}
-          running={lensBusy} onRun={invokeLens} onClear={() => { setThreads((current) => ({ ...current, [role]: [] })); setLensResult(null); }} onFinding={jumpToFinding}
-        />}
-        {inspectorTab === "search" && <SearchPanel query={searchQuery} setQuery={setSearchQuery} hits={searchHits} onSearch={runSearch} onHit={(hit) => void loadChapter(hit.chapterId, hit)} />}
-        {inspectorTab === "history" && <HistoryPanel entries={checkpoints} onCreate={createCheckpoint} onRestore={restoreCheckpoint} onVariation={createVariation} />}
-      </aside>
+      {showInspector && <aside className={`inspector-pane dock-${layout.inspector}`} style={{ gridColumn: layout.inspector === "bottom" ? columnFor("editor") : columnFor("inspector"), gridRow: layout.inspector === "bottom" ? 2 : "1 / -1" }}>
+        <div className={`pane-resizer ${layout.inspector === "bottom" ? "horizontal edge-top" : `vertical edge-${layout.inspector === "left" ? "right" : "left"}`}`} onPointerDown={(event) => beginPaneResize(layout.inspector === "bottom" ? "bottom" : "inspector", event)} />
+        {inspectorContent}
+      </aside>}
     </div>
-  </div>{promptDialog}{settingsOverlay}</>;
+  </div>{promptDialog}{settingsOverlay}</div>;
 }
 
 function TextPrompt({ request, onCancel, onSubmit }: { request: TextPromptRequest; onCancel: () => void; onSubmit: (value: string) => void }): ReactNode {
@@ -615,25 +749,47 @@ function TextPrompt({ request, onCancel, onSubmit }: { request: TextPromptReques
   </div>;
 }
 
-function Welcome({ appInfo, busy, error, onCreate, onOpen, onSettings }: { appInfo: AppInfo | null; busy: boolean; error: string | null; onCreate: () => void; onOpen: () => void; onSettings: () => void }): ReactNode {
+function Welcome({ appInfo, busy, error, colorTheme, onToggleTheme, onCreate, onOpen, onSettings }: { appInfo: AppInfo | null; busy: boolean; error: string | null; colorTheme: "light" | "dark"; onToggleTheme: () => void; onCreate: () => void; onOpen: () => void; onSettings: () => void }): ReactNode {
   return <main className="welcome">
-    <div className="welcome-panel">
-      <span className="welcome-mark">NL</span>
-      <p className="eyebrow">LOCAL-FIRST NOVEL STUDIO</p>
-      <h1>物語を書く人のための、<br />静かな仕事場。</h1>
-      <p className="welcome-copy">原稿はあなたのフォルダーにMarkdownで保存されます。AIは任意で、送信する章を毎回確認できます。</p>
-      {error !== null && <p className="welcome-error">{error}</p>}
-      <div className="welcome-actions"><button className="primary" disabled={busy} onClick={onCreate}>新しい作品を作る</button><button className="secondary" disabled={busy} onClick={onOpen}>作品フォルダーを開く</button><button className="secondary" onClick={onSettings}>設定</button></div>
-      <p className="welcome-open-help">既存作品を開くときは、作品フォルダー内の <code>novel-lens.json</code> を選びます。</p>
-      <div className="welcome-features"><span>縦書き・横書き</span><span>自動保存と保存点</span><span>根拠付きAIレンズ</span></div>
-      <small>Novel Lens {appInfo?.version ?? ""} · {appInfo?.platform ?? "desktop"}</small>
-    </div>
+    <header className="welcome-header">
+      <div className="welcome-brand"><AppIcon name="logo" size={30} tile /><span><b>Novel Lens</b><small>Writing workspace</small></span></div>
+      <div className="welcome-header-actions"><button className="icon-button" onClick={onToggleTheme} title="配色を切り替える"><AppIcon name={colorTheme === "dark" ? "sun" : "moon"} /></button><button className="icon-button" onClick={onSettings} title="設定"><AppIcon name="settings" /></button></div>
+    </header>
+
+    <section className="welcome-hero">
+      <div className="welcome-copy-block">
+        <p className="eyebrow">LOCAL-FIRST NOVEL STUDIO</p>
+        <h1>書くことだけに、<br /><span>深く潜れる場所。</span></h1>
+        <p className="welcome-copy">Markdownを正本に、章立て・保存点・AIの読み手をひとつの静かなワークベンチへ。画面の配置も配色も、あなたの書き方に合わせられます。</p>
+        {error !== null && <p className="welcome-error">{error}</p>}
+        <div className="welcome-actions">
+          <button className="home-action primary-card" disabled={busy} onClick={onCreate}><span className="home-action-icon"><AppIcon name="new" /></span><span><b>新しい作品</b><small>空白から物語を始める</small></span><span className="action-arrow">↗</span></button>
+          <button className="home-action" disabled={busy} onClick={onOpen}><span className="home-action-icon blue"><AppIcon name="open" /></span><span><b>作品を開く</b><small>既存のフォルダーを選択</small></span><span className="action-arrow">→</span></button>
+          <button className="home-action" onClick={onSettings}><span className="home-action-icon amber"><AppIcon name="layout" /></span><span><b>環境を整える</b><small>テーマと配置をカスタマイズ</small></span><span className="action-arrow">→</span></button>
+        </div>
+      </div>
+
+      <div className="welcome-visual" aria-hidden="true">
+        <div className="visual-glow" />
+        <div className="visual-grid">
+          <span className="visual-tile tile-files"><AppIcon name="files" /></span>
+          <span className="visual-tile tile-lens"><AppIcon name="lens" /></span>
+          <span className="visual-tile tile-main"><AppIcon name="logo" size={118} tile /></span>
+          <span className="visual-tile tile-search"><AppIcon name="search" /></span>
+          <span className="visual-tile tile-history"><AppIcon name="history" /></span>
+          <span className="visual-tile tile-layout"><AppIcon name="layout" /></span>
+        </div>
+        <div className="visual-note"><span className="status-dot" /><span><b>Ready to write</b><small>ローカル保存・自動保存</small></span></div>
+      </div>
+    </section>
+
+    <footer className="welcome-footer"><div className="welcome-features"><span><AppIcon name="edit" /> 縦書き・横書き</span><span><AppIcon name="checkpoint" /> 自動保存と保存点</span><span><AppIcon name="lens" /> 根拠付きAIレンズ</span></div><small>Novel Lens {appInfo?.version ?? ""} · {appInfo?.platform ?? "desktop"}</small></footer>
   </main>;
 }
 
 interface LensPanelProps {
   role: RoleId; setRole: (role: RoleId) => void; provider: LensProviderId; setProvider: (provider: LensProviderId) => void;
-  modelId: string; setModelId: (value: string) => void; openAIConnected: boolean; onOpenSettings: () => void;
+  modelId: string; setModelId: (value: string) => void; codexModels: CodexModelOption[]; codexConnected: boolean; openAIConnected: boolean; onOpenSettings: () => void;
   query: string; setQuery: (value: string) => void; scopeMode: ScopeMode; setScopeMode: (value: ScopeMode) => void;
   scopeTitles: string[]; approved: boolean; setApproved: (value: boolean) => void; thread: LensMessage[]; result: LensRunResult | null;
   running: boolean; onRun: () => void; onClear: () => void; onFinding: (finding: LensFinding) => void;
@@ -655,12 +811,13 @@ function LensPanel(props: LensPanelProps): ReactNode {
     </article>)}</div>}
 
     <label>質問<textarea rows={4} value={props.query} onChange={(event) => props.setQuery(event.target.value)} placeholder={DEFAULT_QUERY} /></label>
-    <div className="form-row"><label>接続<select value={props.provider} onChange={(event) => props.setProvider(event.target.value as LensProviderId)}><option value="mock">Offline Mock</option><option value="openai">OpenAI API</option></select></label><label>範囲<select value={props.scopeMode} onChange={(event) => props.setScopeMode(event.target.value as ScopeMode)}><option value="current">現在の章だけ</option><option value="through-current">現在の章まで</option><option value="all">全章</option></select></label></div>
+    <div className="form-row"><label>接続<select value={props.provider} onChange={(event) => props.setProvider(event.target.value as LensProviderId)}><option value="codex">ChatGPT（Codex枠）</option><option value="mock">Offline Mock</option><option value="openai">OpenAI API</option></select></label><label>範囲<select value={props.scopeMode} onChange={(event) => props.setScopeMode(event.target.value as ScopeMode)}><option value="current">現在の章だけ</option><option value="through-current">現在の章まで</option><option value="all">全章</option></select></label></div>
+    {props.provider === "codex" && <div className="lens-connection"><label>モデル<select value={props.modelId} onChange={(event) => props.setModelId(event.target.value)}>{props.codexModels.length === 0 && <option value={props.modelId}>{props.modelId}</option>}{props.codexModels.map((model) => <option key={model.id} value={model.id}>{model.displayName}{model.id === "gpt-5.6-luna" ? "（節約）" : ""}</option>)}</select></label><div className="lens-connection-state"><span className={props.codexConnected ? "connected" : "disconnected"}>{props.codexConnected ? "ChatGPT接続済み" : "ChatGPT未接続"}</span><button className="text-button" onClick={props.onOpenSettings}>接続設定を開く</button></div></div>}
     {props.provider === "openai" && <div className="lens-connection"><label>Model ID<input value={props.modelId} onChange={(event) => props.setModelId(event.target.value)} /></label><div className="lens-connection-state"><span className={props.openAIConnected ? "connected" : "disconnected"}>{props.openAIConnected ? "OpenAI接続済み" : "OpenAI未接続"}</span><button className="text-button" onClick={props.onOpenSettings}>接続設定を開く</button></div></div>}
     <details className="scope-preview" open><summary>送信範囲: {props.scopeTitles.length}章</summary><ul>{props.scopeTitles.map((title) => <li key={title}>{title}</li>)}</ul><p>未選択章、設定画面、履歴、ファイルパスは送信しません。</p></details>
     <label className="check"><input type="checkbox" checked={props.approved} onChange={(event) => props.setApproved(event.target.checked)} /> 表示された章だけを送信することを確認しました</label>
-    <button className="primary full" disabled={props.running || !props.approved || props.query.trim().length === 0 || (props.provider === "openai" && !props.openAIConnected)} onClick={props.onRun}>{props.running ? "検証しながら読んでいます…" : `${definition.label}に聞く`}</button>
-    <p className="privacy-note">本文の生成・書換え・自動適用は行いません。会話とAPIキーはprojectへ保存しません。</p>
+    <button className="primary full" disabled={props.running || !props.approved || props.query.trim().length === 0 || (props.provider === "codex" && !props.codexConnected) || (props.provider === "openai" && !props.openAIConnected)} onClick={props.onRun}>{props.running ? "検証しながら読んでいます…" : `${definition.label}に聞く`}</button>
+    <p className="privacy-note">本文の生成・書換え・自動適用は行いません。会話と認証情報はprojectへ保存しません。</p>
   </div>;
 }
 

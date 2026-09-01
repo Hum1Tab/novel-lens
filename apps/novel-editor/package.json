@@ -1,6 +1,6 @@
 {
   "name": "@novel-lens/desktop",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "作者所有のMarkdown原稿、復元可能な履歴、根拠付きAIレンズを備えた日本語小説制作環境",
   "author": "Novel Lens contributors",
   "homepage": "https://github.com/Hum1Tab/novel-lens",
@@ -29,6 +29,7 @@
   "dependencies": {
     "@novel-lens/editor-core": "workspace:*",
     "@novel-lens/project-store": "workspace:*",
+    "@openai/codex": "0.152.0",
     "react": "19.2.8",
     "react-dom": "19.2.8"
   },
@@ -47,6 +48,9 @@
     "productName": "Novel Lens",
     "executableName": "novel-lens",
     "asar": true,
+    "asarUnpack": [
+      "node_modules/@openai/codex-*/vendor/**/*"
+    ],
     "artifactName": "Novel-Lens-${version}-${os}-${arch}.${ext}",
     "directories": {
       "output": "release"

@@ -5,6 +5,8 @@ export type AppCommandId =
   | "history.checkpoint"
   | "file.export"
   | "view.settings"
+  | "view.settings.appearance"
+  | "view.settings.layout"
   | "view.settings.editor"
   | "view.settings.ai"
   | "view.settings.accounts"
@@ -29,6 +31,8 @@ export const COMMAND_DEFINITIONS: readonly CommandDefinition[] = [
   { id: "history.checkpoint", label: "保存点を作る", category: "履歴", defaultBinding: "Mod+Shift+S" },
   { id: "file.export", label: "Markdownを書き出す", category: "ファイル", defaultBinding: "Mod+Alt+E" },
   { id: "view.settings", label: "設定を開く", category: "表示", defaultBinding: "Mod+," },
+  { id: "view.settings.appearance", label: "外観設定を開く", category: "設定", defaultBinding: "" },
+  { id: "view.settings.layout", label: "レイアウト設定を開く", category: "設定", defaultBinding: "" },
   { id: "view.settings.editor", label: "エディター設定を開く", category: "設定", defaultBinding: "" },
   { id: "view.settings.ai", label: "AI接続設定を開く", category: "設定", defaultBinding: "" },
   { id: "view.settings.accounts", label: "アカウント設定を開く", category: "設定", defaultBinding: "" },
@@ -51,17 +55,39 @@ export interface EditorPreferences {
   width: number;
 }
 
+export interface AppearancePreferences {
+  colorTheme: "system" | "light" | "dark";
+  accent: "violet" | "blue" | "amber";
+  density: "comfortable" | "compact";
+}
+
+export interface LayoutPreferences {
+  primarySidebar: "left" | "right";
+  inspector: "left" | "right" | "bottom";
+  activityBar: "left" | "right";
+  showPrimarySidebar: boolean;
+  showInspector: boolean;
+  sidebarWidth: number;
+  inspectorWidth: number;
+  bottomPanelHeight: number;
+  zenMode: boolean;
+}
+
 export interface UserSettings {
   schemaVersion: 1;
   general: { autoSaveDelayMs: number };
+  appearance: AppearancePreferences;
+  layout: LayoutPreferences;
   editor: EditorPreferences;
-  ai: { defaultProvider: "mock" | "openai"; openaiModel: string };
+  ai: { defaultProvider: "mock" | "codex" | "openai"; codexModel: string; openaiModel: string };
   updates: { checkOnStartup: boolean };
   keybindings: KeybindingMap;
 }
 
 export type UserSettingsPatch = {
   general?: Partial<UserSettings["general"]>;
+  appearance?: Partial<UserSettings["appearance"]>;
+  layout?: Partial<UserSettings["layout"]>;
   editor?: Partial<UserSettings["editor"]>;
   ai?: Partial<UserSettings["ai"]>;
   updates?: Partial<UserSettings["updates"]>;
@@ -79,8 +105,10 @@ export function defaultUserSettings(): UserSettings {
   return {
     schemaVersion: 1,
     general: { autoSaveDelayMs: 800 },
+    appearance: { colorTheme: "system", accent: "violet", density: "comfortable" },
+    layout: { primarySidebar: "left", inspector: "right", activityBar: "left", showPrimarySidebar: true, showInspector: true, sidebarWidth: 252, inspectorWidth: 380, bottomPanelHeight: 310, zenMode: false },
     editor: { writingMode: "horizontal", theme: "paper", font: DEFAULT_FONT, fontSize: 18, lineHeight: 2, width: 760 },
-    ai: { defaultProvider: "mock", openaiModel: "gpt-5-mini" },
+    ai: { defaultProvider: "codex", codexModel: "gpt-5.6-luna", openaiModel: "gpt-5.6-luna" },
     updates: { checkOnStartup: true },
     keybindings: defaultKeybindings()
   };
@@ -138,6 +166,8 @@ export function sanitizeUserSettings(input: unknown): UserSettings {
   const defaults = defaultUserSettings();
   const source = objectValue(input);
   const general = objectValue(source["general"]);
+  const appearance = objectValue(source["appearance"]);
+  const layout = objectValue(source["layout"]);
   const editor = objectValue(source["editor"]);
   const ai = objectValue(source["ai"]);
   const updates = objectValue(source["updates"]);
@@ -154,6 +184,22 @@ export function sanitizeUserSettings(input: unknown): UserSettings {
   return {
     schemaVersion: 1,
     general: { autoSaveDelayMs: finiteNumber(general["autoSaveDelayMs"], defaults.general.autoSaveDelayMs, 250, 5000) },
+    appearance: {
+      colorTheme: appearance["colorTheme"] === "light" || appearance["colorTheme"] === "dark" || appearance["colorTheme"] === "system" ? appearance["colorTheme"] : defaults.appearance.colorTheme,
+      accent: appearance["accent"] === "blue" || appearance["accent"] === "amber" || appearance["accent"] === "violet" ? appearance["accent"] : defaults.appearance.accent,
+      density: appearance["density"] === "compact" || appearance["density"] === "comfortable" ? appearance["density"] : defaults.appearance.density
+    },
+    layout: {
+      primarySidebar: layout["primarySidebar"] === "right" ? "right" : "left",
+      inspector: layout["inspector"] === "left" || layout["inspector"] === "bottom" ? layout["inspector"] : "right",
+      activityBar: layout["activityBar"] === "right" ? "right" : "left",
+      showPrimarySidebar: typeof layout["showPrimarySidebar"] === "boolean" ? layout["showPrimarySidebar"] : defaults.layout.showPrimarySidebar,
+      showInspector: typeof layout["showInspector"] === "boolean" ? layout["showInspector"] : defaults.layout.showInspector,
+      sidebarWidth: finiteNumber(layout["sidebarWidth"], defaults.layout.sidebarWidth, 180, 420),
+      inspectorWidth: finiteNumber(layout["inspectorWidth"], defaults.layout.inspectorWidth, 280, 680),
+      bottomPanelHeight: finiteNumber(layout["bottomPanelHeight"], defaults.layout.bottomPanelHeight, 200, 560),
+      zenMode: typeof layout["zenMode"] === "boolean" ? layout["zenMode"] : defaults.layout.zenMode
+    },
     editor: {
       writingMode: editor["writingMode"] === "vertical-rl" ? "vertical-rl" : editor["writingMode"] === "horizontal" ? "horizontal" : defaults.editor.writingMode,
       theme: editor["theme"] === "dark" || editor["theme"] === "sepia" || editor["theme"] === "paper" ? editor["theme"] : defaults.editor.theme,
@@ -163,7 +209,8 @@ export function sanitizeUserSettings(input: unknown): UserSettings {
       width: finiteNumber(editor["width"], defaults.editor.width, 480, 1600)
     },
     ai: {
-      defaultProvider: ai["defaultProvider"] === "openai" ? "openai" : "mock",
+      defaultProvider: ai["defaultProvider"] === "openai" || ai["defaultProvider"] === "codex" ? ai["defaultProvider"] : ai["defaultProvider"] === "mock" ? "mock" : defaults.ai.defaultProvider,
+      codexModel: typeof ai["codexModel"] === "string" && /^[A-Za-z0-9._:-]{1,128}$/u.test(ai["codexModel"]) ? ai["codexModel"] : defaults.ai.codexModel,
       openaiModel: typeof ai["openaiModel"] === "string" && /^[A-Za-z0-9._:-]{1,128}$/u.test(ai["openaiModel"]) ? ai["openaiModel"] : defaults.ai.openaiModel
     },
     updates: { checkOnStartup: typeof updates["checkOnStartup"] === "boolean" ? updates["checkOnStartup"] : defaults.updates.checkOnStartup },
@@ -175,6 +222,8 @@ export function mergeUserSettings(current: UserSettings, patch: UserSettingsPatc
   const candidate = sanitizeUserSettings({
     schemaVersion: 1,
     general: { ...current.general, ...patch.general },
+    appearance: { ...current.appearance, ...patch.appearance },
+    layout: { ...current.layout, ...patch.layout },
     editor: { ...current.editor, ...patch.editor },
     ai: { ...current.ai, ...patch.ai },
     updates: { ...current.updates, ...patch.updates },

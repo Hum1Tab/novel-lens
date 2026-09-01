@@ -1,7 +1,8 @@
 import { spawn } from "node:child_process";
 import { join } from "node:path";
 
-import type { ConnectionStatus, GitHubConnectionStatus, OpenAIConnectionStatus } from "../shared/types.js";
+import type { CodexConnectionStatus, ConnectionStatus, GitHubConnectionStatus, OpenAIConnectionStatus } from "../shared/types.js";
+import { CodexAppServer } from "./codex-app-server.js";
 import { SecureCredentialStore } from "./secure-credentials.js";
 
 interface ProcessResult { exitCode: number; timedOut: boolean }
@@ -39,6 +40,19 @@ function runCommand(executable: string, args: readonly string[], timeoutMs: numb
 }
 
 export class ConnectionManager {
+  private codex: CodexAppServer | null = null;
+  private codexStatus: CodexConnectionStatus = {
+    installed: false,
+    connected: false,
+    state: "unavailable",
+    message: "Codex実行環境をまだ確認していません。",
+    email: null,
+    planType: null,
+    models: [],
+    modelsUpdatedAt: null,
+    usedPercent: null,
+    resetsAt: null
+  };
   private openAIKey: string | null = null;
   private openAIStatus: OpenAIConnectionStatus = {
     connected: false,
@@ -58,6 +72,15 @@ export class ConnectionManager {
   private githubExecutable: string | null = null;
 
   constructor(private readonly onStatus: (status: ConnectionStatus) => void = () => undefined) {}
+
+  initializeCodex(clientVersion: string, scratchDirectory: string): ConnectionStatus {
+    this.codex = new CodexAppServer(clientVersion, scratchDirectory, (status) => {
+      this.codexStatus = status;
+      this.emit();
+    });
+    void this.codex.refresh().then((status) => { this.codexStatus = status; this.emit(); });
+    return this.emit();
+  }
 
   async initializeOpenAI(store: SecureCredentialStore): Promise<ConnectionStatus> {
     this.credentialStore = store;
@@ -81,12 +104,37 @@ export class ConnectionManager {
   }
 
   statusSnapshot(): ConnectionStatus {
-    return { openai: { ...this.openAIStatus }, github: { ...this.githubStatus } };
+    return { codex: { ...this.codexStatus, models: this.codexStatus.models.map((model) => ({ ...model })) }, openai: { ...this.openAIStatus }, github: { ...this.githubStatus } };
   }
 
   async refreshStatus(): Promise<ConnectionStatus> {
-    this.githubStatus = await this.probeGitHub();
+    const [github, codex] = await Promise.all([this.probeGitHub(), this.codex?.refresh()]);
+    this.githubStatus = github;
+    if (codex !== undefined) this.codexStatus = codex;
     return this.emit();
+  }
+
+  async loginCodex(openExternal: (url: string) => Promise<void>): Promise<ConnectionStatus> {
+    if (this.codex === null) throw new Error("Codex接続をまだ初期化できません。");
+    this.codexStatus = await this.codex.login(openExternal);
+    return this.emit();
+  }
+
+  async logoutCodex(): Promise<ConnectionStatus> {
+    if (this.codex === null) throw new Error("Codex接続をまだ初期化できません。");
+    this.codexStatus = await this.codex.logout();
+    return this.emit();
+  }
+
+  async refreshCodexModels(): Promise<ConnectionStatus> {
+    if (this.codex === null) throw new Error("Codex接続をまだ初期化できません。");
+    this.codexStatus = await this.codex.refreshModels();
+    return this.emit();
+  }
+
+  runCodex(modelId: string, prompt: string, outputSchema: Record<string, unknown>): Promise<{ text: string; modelId: string }> {
+    if (this.codex === null) throw new Error("Codex接続をまだ初期化できません。");
+    return this.codex.run(modelId, prompt, outputSchema);
   }
 
   async connectOpenAI(apiKey: string): Promise<ConnectionStatus> {
@@ -154,6 +202,7 @@ export class ConnectionManager {
 
   clear(): void {
     this.openAIKey = null;
+    this.codex?.stop();
   }
 
   private async performGitHubLogin(): Promise<ConnectionStatus> {

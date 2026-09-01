@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 
+import { AppIcon, type IconName } from "./AppIcon.js";
+
 import {
   COMMAND_DEFINITIONS,
   bindingFromKeyboardEvent,
@@ -11,7 +13,7 @@ import {
 } from "../shared/settings.js";
 import type { AppInfo, ConnectionStatus, ProjectSettings, ProjectSummary, UpdateStatus } from "../shared/types.js";
 
-export type SettingsCategory = "general" | "editor" | "ai" | "accounts" | "keyboard" | "updates" | "about";
+export type SettingsCategory = "general" | "appearance" | "layout" | "editor" | "ai" | "accounts" | "keyboard" | "updates" | "about";
 type EditorKey = keyof EditorPreferences;
 
 interface SettingsViewProps {
@@ -27,6 +29,9 @@ interface SettingsViewProps {
   onUpdateProject: (patch: ProjectSettings) => Promise<void>;
   onResetProjectSetting: (key: EditorKey) => Promise<void>;
   onRefreshConnections: () => Promise<void>;
+  onLoginCodex: () => Promise<void>;
+  onLogoutCodex: () => Promise<void>;
+  onRefreshCodexModels: () => Promise<void>;
   onConnectOpenAI: (key: string) => Promise<void>;
   onDisconnectOpenAI: () => Promise<void>;
   onLoginGitHub: () => Promise<void>;
@@ -37,17 +42,20 @@ interface SettingsViewProps {
   onOpenExternal: (page: "chatgpt" | "openai-api-keys" | "github-cli" | "github-applications" | "latest-release") => Promise<void>;
 }
 
-const CATEGORIES: readonly { id: SettingsCategory; label: string; icon: string; search: string }[] = [
-  { id: "general", label: "全般", icon: "⌂", search: "全般 自動保存 起動" },
-  { id: "editor", label: "エディター", icon: "Aa", search: "エディター 縦書き 横書き フォント テーマ 文字 行間 幅" },
-  { id: "ai", label: "AI", icon: "◇", search: "AI OpenAI ChatGPT API model レンズ" },
-  { id: "accounts", label: "アカウント", icon: "◎", search: "アカウント ChatGPT OpenAI GitHub ログイン 認証" },
-  { id: "keyboard", label: "キーボード", icon: "⌨", search: "キーボード ショートカット キー割り当て" },
-  { id: "updates", label: "更新", icon: "↻", search: "更新 アップデート install download version" },
-  { id: "about", label: "情報", icon: "i", search: "情報 version license privacy OSS" }
+const CATEGORIES: readonly { id: SettingsCategory; label: string; icon: IconName; search: string }[] = [
+  { id: "general", label: "全般", icon: "settings", search: "全般 自動保存 起動" },
+  { id: "appearance", label: "外観", icon: "sun", search: "外観 テーマ 色 アクセント 密度" },
+  { id: "layout", label: "レイアウト", icon: "layout", search: "レイアウト サイドバー インスペクター パネル Zen" },
+  { id: "editor", label: "エディター", icon: "edit", search: "エディター 縦書き 横書き フォント テーマ 文字 行間 幅" },
+  { id: "ai", label: "AI", icon: "lens", search: "AI OpenAI ChatGPT API model レンズ" },
+  { id: "accounts", label: "アカウント", icon: "settings", search: "アカウント ChatGPT OpenAI GitHub ログイン 認証" },
+  { id: "keyboard", label: "キーボード", icon: "settings", search: "キーボード ショートカット キー割り当て" },
+  { id: "updates", label: "更新", icon: "history", search: "更新 アップデート install download version" },
+  { id: "about", label: "情報", icon: "check", search: "情報 version license privacy OSS" }
 ] as const;
 
 const EMPTY_CONNECTIONS: ConnectionStatus = {
+  codex: { installed: false, connected: false, state: "unavailable", message: "Codex実行環境を確認していません。", email: null, planType: null, models: [], modelsUpdatedAt: null, usedPercent: null, resetsAt: null },
   openai: { connected: false, state: "disconnected", storage: "none", message: "OpenAI APIは未接続です。", verifiedAt: null },
   github: { cliInstalled: false, connected: false, state: "unavailable", message: "GitHub CLIの状態を確認していません。" }
 };
@@ -158,6 +166,17 @@ export function SettingsView(props: SettingsViewProps): ReactNode {
     </SettingRow>
   </>;
 
+  const codex = connections.codex;
+  const codexCard = <div className="connection-card">
+    <div className="connection-heading"><div><h3>ChatGPT / Codex</h3><p>{codex.message}</p></div><StatusBadge state={codex.connected ? "ok" : codex.state === "error" || codex.state === "unavailable" ? "warn" : "muted"}>{codex.connected ? codex.planType ?? "接続済み" : codex.state === "authenticating" ? "認証中" : "未接続"}</StatusBadge></div>
+    {codex.connected ? <>
+      <p className="settings-note">{codex.email ?? "ChatGPTアカウント"}{codex.usedPercent === null ? "" : ` · 現在の利用枠 ${Math.round(codex.usedPercent)}% 使用`}</p>
+      <div className="settings-actions"><button className="secondary" disabled={busy !== null} onClick={() => void run("codex-models", props.onRefreshCodexModels)}>{busy === "codex-models" ? "更新中…" : "モデル一覧を更新"}</button><button className="text-button" disabled={busy !== null} onClick={() => { if (window.confirm("ChatGPTからログアウトしますか？ Codex CLIのログイン状態にも影響する場合があります。")) void run("codex-logout", props.onLogoutCodex); }}>ログアウト</button></div>
+    </> : <button className="primary" disabled={busy !== null || !codex.installed} onClick={() => void run("codex-login", props.onLoginCodex)}>{busy === "codex-login" ? "ブラウザで認証中…" : "ChatGPTでログイン"}</button>}
+    {!codex.installed && <button className="secondary" disabled={busy !== null} onClick={() => void run("codex-check", props.onRefreshConnections)}>Codex実行環境を再確認</button>}
+    <p className="settings-note">公式Codex App Serverのbrowser flowを使用します。AIレンズの実行はChatGPTプランのCodex利用枠へ計上され、認証tokenをNovel Lensのrendererや作品ファイルへ渡しません。</p>
+  </div>;
+
   return <div className="settings-view" role="dialog" aria-modal="true" aria-labelledby="settings-title">
     <header className="settings-header">
       <button className="settings-back" onClick={props.onClose} aria-label="設定を閉じる">←</button>
@@ -167,7 +186,7 @@ export function SettingsView(props: SettingsViewProps): ReactNode {
     </header>
     <div className="settings-layout">
       <nav className="settings-nav" aria-label="設定カテゴリ">
-        {visibleCategories.map((item) => <button key={item.id} className={props.category === item.id ? "active" : ""} onClick={() => props.setCategory(item.id)}><span>{item.icon}</span>{item.label}</button>)}
+        {visibleCategories.map((item) => <button key={item.id} className={props.category === item.id ? "active" : ""} onClick={() => props.setCategory(item.id)}><span><AppIcon name={item.icon} size={16} /></span>{item.label}</button>)}
         {visibleCategories.length === 0 && <p>一致する設定がありません。</p>}
       </nav>
       <main className="settings-main">
@@ -176,23 +195,38 @@ export function SettingsView(props: SettingsViewProps): ReactNode {
           <SettingRow title="自動保存" description="入力を止めてから保存するまでの時間です。IME変換中は保存しません。"><select value={props.settings.general.autoSaveDelayMs} onChange={(event) => void props.onUpdateUser({ general: { autoSaveDelayMs: Number(event.target.value) } })}><option value="400">0.4秒</option><option value="800">0.8秒</option><option value="1500">1.5秒</option><option value="3000">3秒</option></select></SettingRow>
           <SettingRow title="設定の保存場所" description="ユーザー設定はOSのNovel Lens設定フォルダーに保存します。APIキーとGitHub tokenは含みません。"><StatusBadge state="ok">ローカルのみ</StatusBadge></SettingRow>
         </SettingsSection>}
+        {props.category === "appearance" && <SettingsSection eyebrow="APPEARANCE" title="外観" lead="Novel Lensの色と表示密度を設定します。作品本文には保存されません。">
+          <SettingRow title="カラーテーマ" description="システム設定に合わせるか、明るい／暗い外観を選びます。"><select value={props.settings.appearance.colorTheme} onChange={(event) => void props.onUpdateUser({ appearance: { colorTheme: event.target.value as "system" | "light" | "dark" } })}><option value="system">システムに合わせる</option><option value="light">ライト</option><option value="dark">ダーク</option></select></SettingRow>
+          <SettingRow title="アクセントカラー" description="操作ボタンや選択状態に使う色です。"><select value={props.settings.appearance.accent} onChange={(event) => void props.onUpdateUser({ appearance: { accent: event.target.value as "violet" | "blue" | "amber" } })}><option value="violet">バイオレット</option><option value="blue">ブルー</option><option value="amber">アンバー</option></select></SettingRow>
+          <SettingRow title="表示密度" description="各パネルの余白とコントロールの密度を調整します。"><select value={props.settings.appearance.density} onChange={(event) => void props.onUpdateUser({ appearance: { density: event.target.value as "comfortable" | "compact" } })}><option value="comfortable">標準</option><option value="compact">コンパクト</option></select></SettingRow>
+        </SettingsSection>}
+        {props.category === "layout" && <SettingsSection eyebrow="LAYOUT" title="レイアウト" lead="サイドバーやパネルの位置・表示を設定します。">
+          <SettingRow title="メインサイドバー" description="作品ナビゲーションを表示する位置です。"><select value={props.settings.layout.primarySidebar} onChange={(event) => void props.onUpdateUser({ layout: { primarySidebar: event.target.value as "left" | "right" } })}><option value="left">左</option><option value="right">右</option></select></SettingRow>
+          <SettingRow title="インスペクター" description="編集レンズ・検索・履歴を表示する位置です。"><select value={props.settings.layout.inspector} onChange={(event) => void props.onUpdateUser({ layout: { inspector: event.target.value as "left" | "right" | "bottom" } })}><option value="right">右</option><option value="left">左</option><option value="bottom">下</option></select></SettingRow>
+          <SettingRow title="アクティビティバー" description="ビュー切り替えバーの位置です。"><select value={props.settings.layout.activityBar} onChange={(event) => void props.onUpdateUser({ layout: { activityBar: event.target.value as "left" | "right" } })}><option value="left">左</option><option value="right">右</option></select></SettingRow>
+          <SettingRow title="表示するパネル" description="メインサイドバーとインスペクターの表示を切り替えます。"><div className="settings-checks"><label className="toggle"><input type="checkbox" checked={props.settings.layout.showPrimarySidebar} onChange={(event) => void props.onUpdateUser({ layout: { showPrimarySidebar: event.target.checked } })} />作品サイドバー</label><label className="toggle"><input type="checkbox" checked={props.settings.layout.showInspector} onChange={(event) => void props.onUpdateUser({ layout: { showInspector: event.target.checked } })} />インスペクター</label></div></SettingRow>
+          <SettingRow title="サイドバー幅" description={`${props.settings.layout.sidebarWidth} px`}><input aria-label="サイドバー幅" type="range" min="180" max="420" step="4" value={props.settings.layout.sidebarWidth} onChange={(event) => void props.onUpdateUser({ layout: { sidebarWidth: Number(event.target.value) } })} /></SettingRow>
+          <SettingRow title="インスペクター幅" description={`${props.settings.layout.inspectorWidth} px`}><input aria-label="インスペクター幅" type="range" min="280" max="680" step="10" value={props.settings.layout.inspectorWidth} onChange={(event) => void props.onUpdateUser({ layout: { inspectorWidth: Number(event.target.value) } })} /></SettingRow>
+          <SettingRow title="下部パネルの高さ" description={`${props.settings.layout.bottomPanelHeight} px`}><input aria-label="下部パネルの高さ" type="range" min="200" max="560" step="10" value={props.settings.layout.bottomPanelHeight} onChange={(event) => void props.onUpdateUser({ layout: { bottomPanelHeight: Number(event.target.value) } })} /></SettingRow>
+          <SettingRow title="集中モード（Zen）" description="サイドバーとインスペクターを隠し、本文に集中します。"><label className="toggle"><input type="checkbox" checked={props.settings.layout.zenMode} onChange={(event) => void props.onUpdateUser({ layout: { zenMode: event.target.checked } })} />{props.settings.layout.zenMode ? "オン" : "オフ"}</label></SettingRow>
+          <div className="settings-actions"><button className="secondary" onClick={() => void props.onUpdateUser({ layout: { primarySidebar: "left", inspector: "right", activityBar: "left", showPrimarySidebar: true, showInspector: true, sidebarWidth: 252, inspectorWidth: 380, bottomPanelHeight: 310, zenMode: false } })}>既定レイアウトへ戻す</button></div>
+        </SettingsSection>}
         {props.category === "editor" && <SettingsSection eyebrow="EDITOR" title="エディター" lead="VS Codeと同じように、ユーザー既定値と作品固有の上書きを分けます。">{editorPanel}</SettingsSection>}
-        {props.category === "ai" && <SettingsSection eyebrow="AI CONNECTION" title="AIレンズ（OpenAI API）" lead="ChatGPTアカウントではなく、作者が選んだ範囲を読むためのOpenAI API接続です。">
-          <SettingRow title="既定の接続" description="新しく開いたレンズで最初に選ばれる接続です。"><select value={props.settings.ai.defaultProvider} onChange={(event) => void props.onUpdateUser({ ai: { defaultProvider: event.target.value as "mock" | "openai" } })}><option value="mock">Offline Mock（通信なし）</option><option value="openai">OpenAI API</option></select></SettingRow>
+        {props.category === "ai" && <SettingsSection eyebrow="AI CONNECTION" title="AIレンズ" lead="ChatGPTのCodex利用枠、または任意のOpenAI APIキーで、選んだ原稿範囲だけを読みます。">
+          <SettingRow title="既定の接続" description="新しく開いたレンズで最初に選ばれる接続です。"><select value={props.settings.ai.defaultProvider} onChange={(event) => void props.onUpdateUser({ ai: { defaultProvider: event.target.value as "mock" | "codex" | "openai" } })}><option value="codex">ChatGPT（Codex枠）</option><option value="mock">Offline Mock（通信なし）</option><option value="openai">OpenAI API（従量課金）</option></select></SettingRow>
+          <SettingRow title="Codexモデル" description="ログイン中のアカウントで現在利用できるモデルです。一覧は接続時と設定表示時に自動更新されます。"><select value={props.settings.ai.codexModel} disabled={codex.models.length === 0} onChange={(event) => void props.onUpdateUser({ ai: { codexModel: event.target.value } })}>{codex.models.length === 0 && <option value={props.settings.ai.codexModel}>{props.settings.ai.codexModel}</option>}{codex.models.map((model) => <option key={model.id} value={model.id}>{model.displayName}{model.id === "gpt-5.6-luna" ? "（初期・節約）" : ""}</option>)}</select></SettingRow>
+          {codexCard}
+          <h3>APIキー方式（任意）</h3>
           <SettingRow title="OpenAI model ID" description="利用者のAPI projectで利用できる正確なmodel IDを指定します。"><input value={modelDraft} onChange={(event) => setModelDraft(event.target.value)} onBlur={() => { if (modelDraft !== props.settings.ai.openaiModel) void props.onUpdateUser({ ai: { openaiModel: modelDraft } }); }} onKeyDown={(event) => { if (event.key === "Enter") event.currentTarget.blur(); }} /></SettingRow>
           <div className="connection-card">
             <div className="connection-heading"><div><h3>OpenAI API</h3><p>{connections.openai.message}</p></div><StatusBadge state={connections.openai.connected ? "ok" : connections.openai.state === "error" ? "warn" : "muted"}>{connections.openai.connected ? connections.openai.storage === "os" ? "OSへ保存済み" : "接続済み" : "未接続"}</StatusBadge></div>
             {!connections.openai.connected ? <div className="connection-form"><input type="password" autoComplete="off" spellCheck={false} value={openAIKey} onChange={(event) => setOpenAIKey(event.target.value)} placeholder="OpenAI API key" aria-label="OpenAI API key" /><button className="primary" disabled={busy !== null || openAIKey.trim().length < 20} onClick={() => void run("openai", async () => { await props.onConnectOpenAI(openAIKey); setOpenAIKey(""); })}>APIキーを接続して確認</button></div> : <button className="secondary" disabled={busy !== null} onClick={() => void run("openai", props.onDisconnectOpenAI)}>接続と保存済みキーを削除</button>}
             <div className="connection-links"><button onClick={() => void props.onOpenExternal("openai-api-keys")}>APIキーを作成・管理</button></div>
-            <p className="settings-note">ChatGPT Plus / Proのログイン枠は利用しません。API Platformの請求と権限が適用されます。確認後のキーはrendererから消去し、利用可能な端末ではOSの暗号化ストレージへ保存します。作品やsettings.jsonには保存しません。</p>
+            <p className="settings-note">このAPIキー方式を選んだ場合だけAPI Platformの従量課金が適用されます。確認後のキーはrendererから消去し、利用可能な端末ではOSの暗号化ストレージへ保存します。</p>
           </div>
         </SettingsSection>}
         {props.category === "accounts" && <SettingsSection eyebrow="ACCOUNTS" title="アカウント" lead="認証情報はNovel Lensのサーバーを経由しません。">
-          <div className="connection-card">
-            <div className="connection-heading"><div><h3>ChatGPT</h3><p>ブラウザのChatGPTログイン画面を開きます。Novel Lensとは接続されません。</p></div><StatusBadge state="muted">ブラウザ</StatusBadge></div>
-            <button className="secondary" onClick={() => void props.onOpenExternal("chatgpt")}>ChatGPTを開く</button>
-            <p className="settings-note">ブラウザのログイン状態やsubscriptionをNovel Lensが読み取ることはありません。AIレンズは上のOpenAI API接続を使用します。</p>
-          </div>
+          {codexCard}
           <div className="connection-card">
             <div className="connection-heading"><div><h3>GitHub</h3><p>{connections.github.message}</p></div><StatusBadge state={connections.github.connected ? "ok" : connections.github.state === "error" ? "warn" : "muted"}>{connections.github.connected ? "接続済み" : connections.github.cliInstalled ? "未ログイン" : "CLIなし"}</StatusBadge></div>
             {!connections.github.connected && connections.github.cliInstalled && <button className="primary" disabled={busy !== null} onClick={() => void run("github", props.onLoginGitHub)}>{busy === "github" ? "ブラウザで確認中…" : "GitHubへログイン"}</button>}

@@ -34,7 +34,7 @@ export interface CheckpointEntry {
   subject: string;
 }
 
-export type LensProviderId = "mock" | "openai";
+export type LensProviderId = "mock" | "codex" | "openai";
 
 export interface LensMessage {
   sender: "author" | "lens";
@@ -95,6 +95,25 @@ export interface OpenAIConnectionStatus {
   verifiedAt: string | null;
 }
 
+export interface CodexModelOption {
+  id: string;
+  displayName: string;
+  isDefault: boolean;
+}
+
+export interface CodexConnectionStatus {
+  installed: boolean;
+  connected: boolean;
+  state: "unavailable" | "starting" | "signed-out" | "authenticating" | "connected" | "error";
+  message: string;
+  email: string | null;
+  planType: string | null;
+  models: CodexModelOption[];
+  modelsUpdatedAt: string | null;
+  usedPercent: number | null;
+  resetsAt: number | null;
+}
+
 export interface GitHubConnectionStatus {
   cliInstalled: boolean;
   connected: boolean;
@@ -103,6 +122,7 @@ export interface GitHubConnectionStatus {
 }
 
 export interface ConnectionStatus {
+  codex: CodexConnectionStatus;
   openai: OpenAIConnectionStatus;
   github: GitHubConnectionStatus;
 }
@@ -146,6 +166,9 @@ export interface NovelLensApi {
   exportMarkdown(root: string): Promise<string | null>;
   runLens(input: LensRunInput): Promise<LensRunResult>;
   connectionStatus(): Promise<ConnectionStatus>;
+  loginCodex(): Promise<ConnectionStatus>;
+  logoutCodex(): Promise<ConnectionStatus>;
+  refreshCodexModels(): Promise<ConnectionStatus>;
   connectOpenAI(apiKey: string): Promise<ConnectionStatus>;
   disconnectOpenAI(): Promise<ConnectionStatus>;
   loginGitHub(): Promise<ConnectionStatus>;

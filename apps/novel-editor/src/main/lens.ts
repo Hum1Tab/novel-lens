@@ -8,6 +8,8 @@ export interface LensExecutionInput extends LensRunInput {
   apiKey?: string;
 }
 
+export type CodexLensRunner = (modelId: string, prompt: string, outputSchema: Record<string, unknown>) => Promise<{ text: string; modelId: string }>;
+
 interface ModelFinding {
   title: string;
   observation: string;
@@ -71,12 +73,12 @@ function extractOutputText(body: ResponseBody): string {
 
 function validateInput(input: LensExecutionInput): void {
   getRole(input.role);
-  if (input.provider !== "mock" && input.provider !== "openai") throw new Error("AI接続を確認してください。");
+  if (input.provider !== "mock" && input.provider !== "openai" && input.provider !== "codex") throw new Error("AI接続を確認してください。");
   if (input.query.trim().length === 0 || input.query.length > 4000) throw new Error("質問は1〜4000文字で入力してください。");
   if (input.chapters.length === 0 || input.chapters.length > 200) throw new Error("AIへ渡す章を1〜200件で選んでください。");
   const totalChars = input.chapters.reduce((sum, chapter) => sum + chapter.text.length, 0);
   if (totalChars > 250_000) throw new Error("送信範囲が25万文字を超えています。範囲を狭めてください。");
-  if (input.provider === "openai" && !/^[A-Za-z0-9._:-]{1,128}$/u.test(input.modelId)) throw new Error("OpenAI model IDを確認してください。");
+  if (input.provider !== "mock" && !/^[A-Za-z0-9._:-]{1,128}$/u.test(input.modelId)) throw new Error("AI model IDを確認してください。");
   if (input.provider === "openai" && (input.apiKey?.trim().length ?? 0) === 0) throw new Error("OpenAI APIキーをこの実行用に入力してください。");
 }
 
@@ -163,9 +165,19 @@ function mockOutput(input: LensExecutionInput): LensRunResult {
   });
 }
 
-export async function runLens(input: LensExecutionInput): Promise<LensRunResult> {
+export async function runLens(input: LensExecutionInput, codexRunner?: CodexLensRunner): Promise<LensRunResult> {
   validateInput(input);
   if (input.provider === "mock") return mockOutput(input);
+  if (input.provider === "codex") {
+    if (codexRunner === undefined) throw new Error("Codex接続を利用できません。");
+    const prompt = `${modelInstructions(input)}\n- shell・filesystem・web・その他のtoolは使わず、入力本文だけを分析する。\n\n入力:\n${serializeInput(input)}`;
+    const response = await codexRunner(input.modelId, prompt, OUTPUT_SCHEMA as unknown as Record<string, unknown>);
+    const jsonText = response.text.trim().replace(/^```(?:json)?\s*/u, "").replace(/\s*```$/u, "");
+    let parsed: unknown;
+    try { parsed = JSON.parse(jsonText); }
+    catch { throw new Error("Codex回答を指定形式として読めませんでした。"); }
+    return normalizeOutput({ ...input, modelId: response.modelId }, parsed as ModelOutput);
+  }
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 120_000);
   try {

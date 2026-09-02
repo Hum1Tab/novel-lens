@@ -7,6 +7,7 @@
 export type ViewId = "outline" | "lens" | "search" | "history";
 export type SlotId = "primary" | "secondary" | "bottom";
 export type PhysicalSide = "left" | "right";
+export type BottomPanelAlignment = "editor" | "justify";
 
 export const VIEW_IDS: readonly ViewId[] = ["outline", "lens", "search", "history"];
 export const TOOL_VIEWS: readonly ViewId[] = ["lens", "search", "history"];
@@ -21,8 +22,11 @@ export interface DockSlotState {
 
 export interface LayoutPreferences {
   activityBar: PhysicalSide;
+  activityBarVisible: boolean;
   primarySide: PhysicalSide;
   secondarySameSide: boolean;
+  bottomPanelAlignment: BottomPanelAlignment;
+  bottomPanelMaximized: boolean;
   slots: Record<SlotId, DockSlotState>;
   zenMode: boolean;
 }
@@ -63,8 +67,11 @@ function defaultSlot(id: SlotId): DockSlotState {
 export function defaultLayout(): LayoutPreferences {
   return {
     activityBar: "left",
+    activityBarVisible: true,
     primarySide: "left",
     secondarySameSide: false,
+    bottomPanelAlignment: "editor",
+    bottomPanelMaximized: false,
     zenMode: false,
     slots: {
       primary: defaultSlot("primary"),
@@ -93,8 +100,11 @@ export function sanitizeLayout(raw: Record<string, unknown>): LayoutPreferences 
   const slotsRaw = objectValue(raw["slots"]);
   const next: LayoutPreferences = {
     activityBar: raw["activityBar"] === "right" ? "right" : raw["activityBar"] === "left" ? "left" : base.activityBar,
+    activityBarVisible: typeof raw["activityBarVisible"] === "boolean" ? raw["activityBarVisible"] : base.activityBarVisible,
     primarySide: raw["primarySide"] === "right" ? "right" : raw["primarySide"] === "left" ? "left" : base.primarySide,
     secondarySameSide: typeof raw["secondarySameSide"] === "boolean" ? raw["secondarySameSide"] : base.secondarySameSide,
+    bottomPanelAlignment: raw["bottomPanelAlignment"] === "justify" ? "justify" : "editor",
+    bottomPanelMaximized: typeof raw["bottomPanelMaximized"] === "boolean" ? raw["bottomPanelMaximized"] : base.bottomPanelMaximized,
     zenMode: typeof raw["zenMode"] === "boolean" ? raw["zenMode"] : base.zenMode,
     slots: {
       primary: overlaySlot(base.slots.primary, objectValue(slotsRaw["primary"]), "primary"),
@@ -153,7 +163,7 @@ export function migrateLayoutV1(raw: Record<string, unknown>): LayoutPreferences
 
   if (inspector === "bottom") {
     return {
-      activityBar, primarySide, secondarySameSide: false, zenMode,
+      activityBar, activityBarVisible: true, primarySide, secondarySameSide: false, bottomPanelAlignment: "editor", bottomPanelMaximized: false, zenMode,
       slots: {
         primary,
         secondary: empty(secondarySize),
@@ -163,8 +173,11 @@ export function migrateLayoutV1(raw: Record<string, unknown>): LayoutPreferences
   }
   return {
     activityBar,
+    activityBarVisible: true,
     primarySide,
     secondarySameSide: inspector === primarySide,
+    bottomPanelAlignment: "editor",
+    bottomPanelMaximized: false,
     zenMode,
     slots: {
       primary,
@@ -192,8 +205,11 @@ export function mergeLayout(current: LayoutPreferences, patch?: LayoutPatch): La
   if (patch === undefined) return current;
   return {
     activityBar: patch.activityBar ?? current.activityBar,
+    activityBarVisible: patch.activityBarVisible ?? current.activityBarVisible,
     primarySide: patch.primarySide ?? current.primarySide,
     secondarySameSide: patch.secondarySameSide ?? current.secondarySameSide,
+    bottomPanelAlignment: patch.bottomPanelAlignment ?? current.bottomPanelAlignment,
+    bottomPanelMaximized: patch.bottomPanelMaximized ?? current.bottomPanelMaximized,
     zenMode: patch.zenMode ?? current.zenMode,
     slots: {
       primary: mergeSlot(current.slots.primary, patch.slots?.primary),

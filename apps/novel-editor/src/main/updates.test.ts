@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { checksumForAsset, chooseInstaller, compareVersions } from "./updates.js";
+import { checksumForAsset, chooseInstaller, compareVersions, installerLaunchArguments } from "./updates.js";
 
 describe("desktop update selection", () => {
   it("detects a newer semantic version and selects only this repository's OS installer", () => {
@@ -19,5 +19,10 @@ describe("desktop update selection", () => {
     const digest = "a".repeat(64);
     expect(checksumForAsset(`${digest}  Novel-Lens-0.2.0-linux-x86_64.AppImage\n`, linux[0]!.name)).toBe(digest);
     expect(checksumForAsset(`${digest}  another.exe\n`, linux[0]!.name)).toBeNull();
+  });
+
+  it("uses the NSIS silent update and restart flags only on Windows", () => {
+    expect(installerLaunchArguments("win32")).toEqual(["/S", "--updated", "--force-run"]);
+    expect(installerLaunchArguments("darwin")).toEqual([]);
   });
 });

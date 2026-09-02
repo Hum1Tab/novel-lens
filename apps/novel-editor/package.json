@@ -1,6 +1,6 @@
 {
   "name": "@novel-lens/desktop",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "作者所有のMarkdown原稿、復元可能な履歴、根拠付きAIレンズを備えた日本語小説制作環境",
   "author": "Novel Lens contributors",
   "homepage": "https://github.com/Hum1Tab/novel-lens",

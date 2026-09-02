@@ -9,7 +9,7 @@ import {
 } from "./layout.js";
 
 export { defaultLayout, EDITOR_MIN_WIDTH, EDITOR_SCROLL_MIN_HEIGHT, LAYOUT_LIMITS, mergeLayout, migrateLayoutV1, moveSlotToSide, moveView, placeViewOnSide, projectLayoutV1, sanitizeLayout, sideOf, slotOf, TOOL_VIEWS, VIEW_IDS } from "./layout.js";
-export type { DockSlotState, LayoutPatch, LayoutPreferences, PhysicalSide, SlotId, ViewId } from "./layout.js";
+export type { BottomPanelAlignment, DockSlotState, LayoutPatch, LayoutPreferences, PhysicalSide, SlotId, ViewId } from "./layout.js";
 
 export type AppCommandId =
   | "file.new"

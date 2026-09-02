@@ -11,10 +11,13 @@ import {
 
 describe("layout schema v2", () => {
   it("keeps a partial v2 patch on top of defaults", () => {
-    const layout = sanitizeLayout({ zenMode: true });
+    const layout = sanitizeLayout({ zenMode: true, activityBarVisible: false, bottomPanelAlignment: "justify", bottomPanelMaximized: true });
     expect(layout.slots.primary.views).toEqual(["outline"]);
     expect(layout.slots.secondary.views).toEqual(["lens", "search", "history"]);
     expect(layout.zenMode).toBe(true);
+    expect(layout.activityBarVisible).toBe(false);
+    expect(layout.bottomPanelAlignment).toBe("justify");
+    expect(layout.bottomPanelMaximized).toBe(true);
   });
 
   it("preserves independent slots during a deep merge", () => {
@@ -23,6 +26,7 @@ describe("layout schema v2", () => {
     expect(merged.slots.primary.visible).toBe(false);
     expect(merged.slots.bottom.views).toEqual(["search"]);
     expect(merged.slots.secondary.views).toEqual(["lens", "history"]);
+    expect(mergeLayout(merged, { bottomPanelMaximized: true }).bottomPanelMaximized).toBe(true);
   });
 
   it("migrates the v1 inspector without dropping visibility or dimensions", () => {

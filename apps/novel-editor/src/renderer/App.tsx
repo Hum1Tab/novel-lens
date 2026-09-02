@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, 
 import {
   defaultLayout,
   defaultUserSettings,
+  EDITOR_SCROLL_MIN_HEIGHT,
   LAYOUT_LIMITS,
   moveSlotToSide,
   moveView,
@@ -67,15 +68,14 @@ const VIEW_LABELS: Record<ViewId, string> = {
 
 function applyDropTarget(layout: LayoutPreferences, view: ViewId, target: DropTarget): LayoutPreferences {
   if (target.kind === "reject") return layout;
-  if (target.kind === "slot-tab") return moveView(layout, view, target.slot, target.index);
-  if (target.kind === "bottom-edge") return moveView(layout, view, "bottom");
-  const source = slotOf(layout, view);
-  if (source === null) return layout;
-  if (source === "bottom") {
-    const destination: SlotId = target.side === layout.primarySide ? "primary" : "secondary";
-    return moveView(layout, view, destination);
+  if (target.kind === "slot-tab") {
+    const source = slotOf(layout, view);
+    const sourceIndex = source === target.slot ? layout.slots[source].views.indexOf(view) : -1;
+    const correctedIndex = sourceIndex >= 0 && sourceIndex < target.index ? target.index - 1 : target.index;
+    return moveView(layout, view, target.slot, correctedIndex);
   }
-  return moveSlotToSide(layout, source, target.side);
+  if (target.kind === "bottom-edge") return moveView(layout, view, "bottom");
+  return placeViewOnSide(layout, view, target.side);
 }
 
 interface TextPromptRequest {
@@ -133,6 +133,7 @@ export function App(): ReactNode {
   const [notice, setNotice] = useState<string | null>(null);
   const [dockDrag, setDockDrag] = useState<DockDragState | null>(null);
   const [viewMenu, setViewMenu] = useState<ViewMenuState | null>(null);
+  const [layoutMenuOpen, setLayoutMenuOpen] = useState(false);
   const [layoutAnnouncement, setLayoutAnnouncement] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [searchHits, setSearchHits] = useState<SearchHit[]>([]);
@@ -149,6 +150,8 @@ export function App(): ReactNode {
   const [textPrompt, setTextPrompt] = useState<TextPromptRequest | null>(null);
   const editorRef = useRef<HTMLTextAreaElement>(null);
   const workspaceRef = useRef<HTMLDivElement>(null);
+  const viewMenuRef = useRef<HTMLDivElement>(null);
+  const viewMenuOriginRef = useRef<HTMLElement | null>(null);
   const dockSessionRef = useRef<DockDragState | null>(null);
   const suppressDockClickRef = useRef(false);
   const promptResolverRef = useRef<((value: string | null) => void) | null>(null);
@@ -169,7 +172,26 @@ export function App(): ReactNode {
   }, []);
 
   useEffect(() => {
-    if (viewMenu === null) return;
+    const pointerMode = (): void => document.body.classList.add("input-pointer");
+    const keyboardMode = (event: KeyboardEvent): void => {
+      if (event.key === "Tab" || event.key.startsWith("Arrow")) document.body.classList.remove("input-pointer");
+    };
+    window.addEventListener("pointerdown", pointerMode, true);
+    window.addEventListener("keydown", keyboardMode, true);
+    return () => {
+      window.removeEventListener("pointerdown", pointerMode, true);
+      window.removeEventListener("keydown", keyboardMode, true);
+      document.body.classList.remove("input-pointer");
+    };
+  }, []);
+
+  useEffect(() => {
+    if (viewMenu === null) {
+      viewMenuOriginRef.current?.focus();
+      viewMenuOriginRef.current = null;
+      return;
+    }
+    window.requestAnimationFrame(() => viewMenuRef.current?.querySelector<HTMLButtonElement>('button[role="menuitem"], button[role="menuitemcheckbox"]')?.focus());
     const closeOutside = (event: PointerEvent): void => {
       if (!(event.target instanceof Element) || event.target.closest(".view-context-menu") === null) setViewMenu(null);
     };
@@ -181,6 +203,20 @@ export function App(): ReactNode {
       window.removeEventListener("keydown", closeOnEscape);
     };
   }, [viewMenu]);
+
+  useEffect(() => {
+    if (!layoutMenuOpen) return;
+    const closeOutside = (event: PointerEvent): void => {
+      if (!(event.target instanceof Element) || event.target.closest(".layout-menu-anchor") === null) setLayoutMenuOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent): void => { if (event.key === "Escape") setLayoutMenuOpen(false); };
+    window.addEventListener("pointerdown", closeOutside);
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      window.removeEventListener("pointerdown", closeOutside);
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [layoutMenuOpen]);
 
   const requestText = useCallback((options: TextPromptOptions): Promise<string | null> => {
     promptResolverRef.current?.(null);
@@ -539,6 +575,8 @@ export function App(): ReactNode {
 
   const beginPaneResize = useCallback((slot: SlotId, event: ReactPointerEvent<HTMLDivElement>): void => {
     event.preventDefault();
+    const owner = event.currentTarget;
+    const pointerId = event.pointerId;
     const layout = userSettings.layout;
     const startX = event.clientX;
     const startY = event.clientY;
@@ -560,24 +598,48 @@ export function App(): ReactNode {
         }
       }));
     };
-    const finish = (): void => {
+    const finish = (commit: boolean): void => {
       if (finished) return;
       finished = true;
       window.removeEventListener("pointermove", onMove);
-      window.removeEventListener("pointerup", finish);
-      window.removeEventListener("pointercancel", finish);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onCancel);
+      window.removeEventListener("blur", onCancel);
+      owner.removeEventListener("lostpointercapture", onLostCapture);
       document.body.classList.remove("is-resizing");
-      void updateUserSettings({ layout: { slots: { [slot]: { size: latest } } } });
+      if (owner.hasPointerCapture?.(pointerId)) owner.releasePointerCapture(pointerId);
+      if (commit) void updateUserSettings({ layout: { slots: { [slot]: { size: latest } } } });
+      else setUserSettings((current) => ({ ...current, layout: { ...current.layout, slots: { ...current.layout.slots, [slot]: { ...current.layout.slots[slot], size: startValue } } } }));
     };
+    const onUp = (): void => finish(true);
+    const onCancel = (): void => finish(false);
+    const onLostCapture = (): void => finish(false);
     document.body.classList.remove("is-docking");
     document.body.classList.add("is-resizing");
+    try { owner.setPointerCapture(pointerId); } catch { /* window listeners remain the fallback */ }
     window.addEventListener("pointermove", onMove);
-    window.addEventListener("pointerup", finish);
-    window.addEventListener("pointercancel", finish);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onCancel);
+    window.addEventListener("blur", onCancel);
+    owner.addEventListener("lostpointercapture", onLostCapture);
   }, [updateUserSettings, userSettings.layout]);
 
   const detectDropTarget = useCallback((x: number, y: number): DropTarget => {
     const element = document.elementFromPoint(x, y) as HTMLElement | null;
+    const exactTab = element?.closest<HTMLElement>("[data-view-tab]");
+    if (exactTab !== null && exactTab !== undefined) {
+      const slotElement = exactTab.closest<HTMLElement>("[data-slot-id]");
+      if (slotElement !== null) {
+        const slot = slotElement.dataset["slotId"] as SlotId;
+        const tabs = [...slotElement.querySelectorAll<HTMLElement>("[data-view-tab]")];
+        const index = tabs.filter((tab) => x > tab.getBoundingClientRect().left + tab.getBoundingClientRect().width / 2).length;
+        return { kind: "slot-tab", slot, index };
+      }
+    }
+    const workspace = workspaceRef.current?.getBoundingClientRect();
+    if (workspace === undefined) return { kind: "reject" };
+    if (x <= workspace.left + 92) return { kind: "side-edge", side: "left" };
+    if (x >= workspace.right - 92) return { kind: "side-edge", side: "right" };
     const slotElement = element?.closest<HTMLElement>("[data-slot-id]");
     if (slotElement !== null && slotElement !== undefined) {
       const slot = slotElement.dataset["slotId"] as SlotId;
@@ -585,17 +647,15 @@ export function App(): ReactNode {
       const index = tabs.filter((tab) => x > tab.getBoundingClientRect().left + tab.getBoundingClientRect().width / 2).length;
       return { kind: "slot-tab", slot, index };
     }
-    const workspace = workspaceRef.current?.getBoundingClientRect();
-    if (workspace === undefined) return { kind: "reject" };
     const editor = workspaceRef.current?.querySelector<HTMLElement>("[data-editor-pane]")?.getBoundingClientRect();
-    if (!userSettings.layout.slots.bottom.visible && editor !== undefined && x >= editor.left && x <= editor.right && y >= editor.bottom - 52) return { kind: "bottom-edge" };
-    if (x <= workspace.left + 54) return { kind: "side-edge", side: "left" };
-    if (x >= workspace.right - 54) return { kind: "side-edge", side: "right" };
+    if (editor !== undefined && x >= editor.left && x <= editor.right && y >= workspace.bottom - 76) return { kind: "bottom-edge" };
     return { kind: "reject" };
-  }, [userSettings.layout.slots.bottom.visible]);
+  }, []);
 
   const beginDockDrag = useCallback((view: ViewId, event: ReactPointerEvent<HTMLElement>): void => {
     if (isComposing || event.button !== 0) return;
+    const owner = event.currentTarget;
+    const pointerId = event.pointerId;
     const startX = event.clientX;
     const startY = event.clientY;
     let started = false;
@@ -612,25 +672,34 @@ export function App(): ReactNode {
       dockSessionRef.current = next;
       setDockDrag(next);
     };
-    const finish = (): void => {
+    const finish = (apply: boolean): void => {
       if (finished) return;
       finished = true;
       window.removeEventListener("pointermove", onMove);
-      window.removeEventListener("pointerup", finish);
-      window.removeEventListener("pointercancel", finish);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onCancel);
+      window.removeEventListener("blur", onCancel);
+      owner.removeEventListener("lostpointercapture", onLostCapture);
       document.body.classList.remove("is-docking");
+      if (owner.hasPointerCapture?.(pointerId)) owner.releasePointerCapture(pointerId);
       const session = dockSessionRef.current;
       dockSessionRef.current = null;
       setDockDrag(null);
-      if (session !== null && session.target.kind !== "reject") {
+      if (apply && session !== null && session.target.kind !== "reject") {
         const next = applyDropTarget(userSettings.layout, session.view, session.target);
         commitLayout(next, `${VIEW_LABELS[session.view]}を移動しました`);
       }
       if (started) window.setTimeout(() => { suppressDockClickRef.current = false; }, 0);
     };
+    const onUp = (): void => finish(true);
+    const onCancel = (): void => finish(false);
+    const onLostCapture = (): void => finish(false);
+    try { owner.setPointerCapture(pointerId); } catch { /* window listeners remain the fallback */ }
     window.addEventListener("pointermove", onMove);
-    window.addEventListener("pointerup", finish);
-    window.addEventListener("pointercancel", finish);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onCancel);
+    window.addEventListener("blur", onCancel);
+    owner.addEventListener("lostpointercapture", onLostCapture);
   }, [commitLayout, detectDropTarget, isComposing, userSettings.layout]);
 
   const openViewMenu = useCallback((view: ViewId, x: number, y: number): void => {
@@ -640,6 +709,7 @@ export function App(): ReactNode {
   const handleViewMenuKey = useCallback((view: ViewId, event: ReactKeyboardEvent<HTMLElement>): void => {
     if (event.key === "ContextMenu" || (event.key === "F10" && event.shiftKey)) {
       event.preventDefault();
+      viewMenuOriginRef.current = event.currentTarget;
       const rect = event.currentTarget.getBoundingClientRect();
       openViewMenu(view, rect.left + 12, rect.bottom + 4);
     }
@@ -759,6 +829,7 @@ export function App(): ReactNode {
 
   const layout = userSettings.layout;
   const slotVisible = (slot: SlotId): boolean => !layout.zenMode && layout.slots[slot].visible && layout.slots[slot].views.length > 0;
+  const activityVisible = !layout.zenMode && layout.activityBarVisible;
   type WorkbenchArea = "activity" | "primary" | "editor" | "secondary";
   const leftAreas: WorkbenchArea[] = [];
   const rightAreas: WorkbenchArea[] = [];
@@ -766,17 +837,19 @@ export function App(): ReactNode {
   if (slotVisible("secondary")) (sideOf("secondary", layout) === "left" ? leftAreas : rightAreas).push("secondary");
   if (rightAreas.includes("primary") && rightAreas.includes("secondary")) rightAreas.reverse();
   const columnAreas: WorkbenchArea[] = [
-    ...(layout.zenMode || layout.activityBar !== "left" ? [] : ["activity" as const]),
+    ...(!activityVisible || layout.activityBar !== "left" ? [] : ["activity" as const]),
     ...leftAreas,
     "editor",
     ...rightAreas,
-    ...(layout.zenMode || layout.activityBar !== "right" ? [] : ["activity" as const])
+    ...(!activityVisible || layout.activityBar !== "right" ? [] : ["activity" as const])
   ];
   const columnFor = (area: WorkbenchArea): number => columnAreas.indexOf(area) + 1;
   const bottomVisible = slotVisible("bottom");
+  const contentColumnNumbers = columnAreas.flatMap((area, index) => area === "activity" ? [] : [index + 1]);
+  const justifiedBottomColumn = `${Math.min(...contentColumnNumbers)} / ${Math.max(...contentColumnNumbers) + 1}`;
   let livePrimarySize = layout.slots.primary.size;
   let liveSecondarySize = layout.slots.secondary.size;
-  const widthBudget = Math.max(0, viewport.width - (layout.zenMode ? 0 : 52) - 430);
+  const widthBudget = Math.max(0, viewport.width - (activityVisible ? 52 : 0) - 430);
   let widthOverflow = (slotVisible("primary") ? livePrimarySize : 0) + (slotVisible("secondary") ? liveSecondarySize : 0) - widthBudget;
   if (widthOverflow > 0 && slotVisible("secondary")) {
     const shrink = Math.min(widthOverflow, Math.max(0, liveSecondarySize - LAYOUT_LIMITS.secondary.min));
@@ -784,10 +857,13 @@ export function App(): ReactNode {
     widthOverflow -= shrink;
   }
   if (widthOverflow > 0 && slotVisible("primary")) livePrimarySize -= Math.min(widthOverflow, Math.max(0, livePrimarySize - LAYOUT_LIMITS.primary.min));
-  const liveBottomSize = Math.max(0, Math.min(layout.slots.bottom.size, viewport.height - 64 - 240));
+  const workspaceHeight = workspaceRef.current?.clientHeight ?? viewport.height - 64;
+  const liveBottomSize = Math.max(0, Math.min(layout.slots.bottom.size, workspaceHeight - EDITOR_SCROLL_MIN_HEIGHT - 98));
   const workspaceStyle = {
     gridTemplateColumns: columnAreas.map((area) => area === "activity" ? "var(--nl-activity, 52px)" : area === "primary" ? `${livePrimarySize}px` : area === "secondary" ? `${liveSecondarySize}px` : "minmax(430px, 1fr)").join(" "),
-    gridTemplateRows: bottomVisible ? `minmax(240px, 1fr) ${liveBottomSize}px` : "minmax(240px, 1fr)"
+    gridTemplateRows: bottomVisible
+      ? layout.bottomPanelMaximized ? "0 minmax(200px, 1fr)" : `minmax(240px, 1fr) ${liveBottomSize}px`
+      : "minmax(240px, 1fr)"
   } as CSSProperties;
   const shellStyle = {
     "--editor-font": editorFont,
@@ -844,13 +920,13 @@ export function App(): ReactNode {
 
   const renderView = (view: ViewId): ReactNode => {
     if (view === "outline") return <div className="outline-content">
-      <div
-        className="pane-heading dock-handle"
+      <div className="pane-heading"><div
+        className="pane-title-drag dock-handle"
         onPointerDown={(event) => beginDockDrag("outline", event)}
         onContextMenu={(event) => { event.preventDefault(); openViewMenu("outline", event.clientX, event.clientY); }}
         onKeyDown={(event) => handleViewMenuKey("outline", event)}
         tabIndex={0}
-      ><div><span className="eyebrow">MANUSCRIPT</span><h2>章・場面</h2></div><div className="pane-tools"><button className="icon-button import-button" title="TXT / Markdownを取り込む" onClick={importDocuments}><AppIcon name="import" /></button><button className="icon-button" title="章・場面を追加" onClick={addChapter}><AppIcon name="add" /></button></div></div>
+      ><span className="eyebrow">MANUSCRIPT</span><h2>章・場面</h2></div><div className="pane-tools"><button className="icon-button import-button" title="TXT / Markdownを取り込む" onClick={importDocuments}><AppIcon name="import" /></button><button className="icon-button" title="章・場面を追加" onClick={addChapter}><AppIcon name="add" /></button></div></div>
       <nav className="chapter-list" aria-label="章・場面">
         {manifestChapters.map((item) => <button key={item.id} className={item.id === activeChapterId ? "chapter active" : "chapter"} onClick={() => void loadChapter(item.id)} disabled={busy}>
           <span className="chapter-order">{String(item.order + 1).padStart(2, "0")}</span><span>{item.title}</span>
@@ -876,13 +952,16 @@ export function App(): ReactNode {
     const physicalSide = bottom ? null : sideOf(slotId, layout);
     const activeDrop = dockDrag?.target.kind === "slot-tab" && dockDrag.target.slot === slotId;
     return <aside
-      className={`view-slot ${slotId === "primary" ? "outline-pane" : "inspector-pane"} slot-${slotId} ${bottom ? "dock-bottom" : `dock-${physicalSide}`} ${activeDrop ? "dock-target-active" : ""}`}
-      style={{ gridColumn: bottom ? columnFor("editor") : columnFor(slotId), gridRow: bottom ? 2 : "1 / -1" }}
+      className={`view-slot ${slotId === "primary" ? "outline-pane" : "inspector-pane"} slot-${slotId} ${bottom ? "dock-bottom" : `dock-${physicalSide}`} ${bottom && layout.bottomPanelMaximized ? "is-maximized" : ""} ${activeDrop ? "dock-target-active" : ""}`}
+      style={{
+        gridColumn: bottom ? layout.bottomPanelAlignment === "justify" ? justifiedBottomColumn : columnFor("editor") : columnFor(slotId),
+        gridRow: bottom ? 2 : bottomVisible && layout.bottomPanelAlignment === "justify" ? 1 : "1 / -1"
+      }}
       data-slot-id={slotId}
     >
-      <div className={`pane-resizer ${bottom ? "horizontal edge-top" : `vertical edge-${physicalSide === "left" ? "right" : "left"}`}`} onPointerDown={(event) => beginPaneResize(slotId, event)} />
+      {!(bottom && layout.bottomPanelMaximized) && <div className={`pane-resizer ${bottom ? "horizontal edge-top" : `vertical edge-${physicalSide === "left" ? "right" : "left"}`}`} onPointerDown={(event) => beginPaneResize(slotId, event)} />}
       <div className="view-tabbar" role="tablist" aria-label={`${slotId}パネル`}>
-        {slot.views.map((view) => <button
+        <div className="view-tabs-scroll">{slot.views.map((view) => <button
           key={view}
           type="button"
           role="tab"
@@ -894,7 +973,12 @@ export function App(): ReactNode {
           onPointerDown={(event) => beginDockDrag(view, event)}
           onContextMenu={(event: ReactMouseEvent<HTMLButtonElement>) => { event.preventDefault(); openViewMenu(view, event.clientX, event.clientY); }}
           onKeyDown={(event) => handleViewMenuKey(view, event)}
-        ><span className="view-tab-grip" aria-hidden="true">⠿</span><AppIcon name={view === "outline" ? "files" : view} size={14} />{VIEW_LABELS[view]}</button>)}
+        ><span className="view-tab-grip" aria-hidden="true">⠿</span><AppIcon name={view === "outline" ? "files" : view} size={14} />{VIEW_LABELS[view]}</button>)}</div>
+        <div className="view-tab-actions">
+          {bottom && <button type="button" className="view-tab-action" aria-label={layout.bottomPanelMaximized ? "下部パネルを元の高さへ戻す" : "下部パネルを最大化"} title={layout.bottomPanelMaximized ? "元の高さへ戻す" : "最大化"} onClick={() => commitLayout({ ...layout, bottomPanelMaximized: !layout.bottomPanelMaximized })}><AppIcon name="focus" size={15} /></button>}
+          {activeView !== null && <button type="button" className="view-tab-action" aria-label="パネル操作" title="パネル操作" onClick={(event) => { const rect = event.currentTarget.getBoundingClientRect(); openViewMenu(activeView, rect.right - 216, rect.bottom + 4); }}>…</button>}
+          <button type="button" className="view-tab-action" aria-label="パネルを閉じる" title="パネルを閉じる" onClick={() => commitLayout({ ...layout, bottomPanelMaximized: bottom ? false : layout.bottomPanelMaximized, slots: { ...layout.slots, [slotId]: { ...slot, visible: false } } }, "パネルを閉じました")}><AppIcon name="close" size={15} /></button>
+        </div>
       </div>
       <div className="view-slot-body">{activeView === null ? null : renderView(activeView)}</div>
     </aside>;
@@ -919,18 +1003,41 @@ export function App(): ReactNode {
     commitLayout(moveView(layout, viewMenu.view, menuSlot, Math.max(0, Math.min(views.length - 1, current + delta))), `${VIEW_LABELS[viewMenu.view]}のタブ順を変更しました`);
     setViewMenu(null);
   };
+  const toggleSlotVisibility = (slot: SlotId): void => {
+    const current = layout.slots[slot];
+    if (!current.visible && current.views.length === 0) {
+      const preferred: ViewId = slot === "primary" ? "outline" : slot === "secondary" ? "lens" : layout.slots.secondary.activeView ?? "history";
+      commitLayout({ ...moveView(layout, preferred, slot), zenMode: false });
+      return;
+    }
+    commitLayout({
+      ...layout,
+      zenMode: false,
+      bottomPanelMaximized: slot === "bottom" && current.visible ? false : layout.bottomPanelMaximized,
+      slots: { ...layout.slots, [slot]: { ...current, visible: !current.visible } }
+    });
+  };
 
   return <div className={shellClass} style={shellStyle}><div className={`app ${layout.zenMode ? "zen-mode" : ""}`}>
     <header className="topbar">
       <div className="brand"><span className="brand-mark"><AppIcon name="logo" size={22} /></span><div><b>Novel Lens</b><button className="project-title" onClick={renameProject} title="作品名を変更">{project.manifest.title}</button></div></div>
       <div className="top-actions">
-        <button className="ghost action-with-icon" onClick={openProject}><AppIcon name="open" />作品を開く</button>
-        <button className="ghost action-with-icon" onClick={createCheckpoint}><AppIcon name="checkpoint" />保存点</button>
-        <button className="ghost action-with-icon wide-action" onClick={createVariation}><AppIcon name="files" />別案</button>
-        <button className="ghost action-with-icon wide-action" onClick={exportProject}><AppIcon name="export" />書き出し</button>
+        <button className="ghost action-with-icon" onClick={createCheckpoint} title="現在の状態を保存点にする"><AppIcon name="checkpoint" />保存点</button>
+        <button className="ghost action-with-icon" onClick={exportProject} title="Markdownを書き出す"><AppIcon name="export" />書き出し</button>
         <button className={`icon-button top-icon ${layout.zenMode ? "active" : ""}`} onClick={() => commitLayout({ ...layout, zenMode: !layout.zenMode })} aria-label="集中モード" title="集中モード"><AppIcon name="focus" /></button>
-        <button className="icon-button top-icon" onClick={toggleColorTheme} aria-label="配色を切り替える" title="配色を切り替える"><AppIcon name={colorTheme === "dark" ? "sun" : "moon"} /></button>
-        <button className="icon-button top-icon" onClick={() => openSettings("layout")} aria-label="レイアウト設定を開く" title="レイアウト設定"><AppIcon name="layout" /></button>
+        <div className="layout-menu-anchor">
+          <button className={`icon-button top-icon ${layoutMenuOpen ? "active" : ""}`} onClick={() => setLayoutMenuOpen((open) => !open)} aria-haspopup="menu" aria-expanded={layoutMenuOpen} aria-label="レイアウトを変更" title="レイアウト"><AppIcon name="layout" /></button>
+          {layoutMenuOpen && <div className="layout-quick-menu" role="menu">
+            <strong>WORKBENCH LAYOUT</strong>
+            <div className="layout-menu-section"><span>表示</span>
+              <button role="menuitemcheckbox" aria-checked={layout.activityBarVisible} onClick={() => commitLayout({ ...layout, activityBarVisible: !layout.activityBarVisible, zenMode: false })}><b>{layout.activityBarVisible ? "✓" : ""}</b>アクティビティバー</button>
+              {(["primary", "secondary", "bottom"] as const).map((slot) => <button key={slot} role="menuitemcheckbox" aria-checked={layout.slots[slot].visible} onClick={() => toggleSlotVisibility(slot)}><b>{layout.slots[slot].visible ? "✓" : ""}</b>{slot === "primary" ? "メインパネル" : slot === "secondary" ? "補助パネル" : "下部パネル"}</button>)}
+            </div>
+            <div className="layout-menu-section"><span>アクティビティバーの位置</span><div className="layout-segmented"><button className={layout.activityBar === "left" ? "active" : ""} onClick={() => commitLayout({ ...layout, activityBar: "left", activityBarVisible: true, zenMode: false })}>左</button><button className={layout.activityBar === "right" ? "active" : ""} onClick={() => commitLayout({ ...layout, activityBar: "right", activityBarVisible: true, zenMode: false })}>右</button></div></div>
+            <div className="layout-menu-section"><span>下部パネル</span><div className="layout-segmented"><button className={layout.bottomPanelAlignment === "editor" ? "active" : ""} onClick={() => commitLayout({ ...layout, bottomPanelAlignment: "editor" })}>本文幅</button><button className={layout.bottomPanelAlignment === "justify" ? "active" : ""} onClick={() => commitLayout({ ...layout, bottomPanelAlignment: "justify" })}>全幅</button></div><button role="menuitemcheckbox" aria-checked={layout.bottomPanelMaximized} disabled={!layout.slots.bottom.visible} onClick={() => commitLayout({ ...layout, bottomPanelMaximized: !layout.bottomPanelMaximized })}><b>{layout.bottomPanelMaximized ? "✓" : ""}</b>最大化</button></div>
+            <span className="menu-separator" /><button role="menuitem" onClick={() => { commitLayout(defaultLayout(), "レイアウトを既定へ戻しました"); setLayoutMenuOpen(false); }}><b>↺</b>既定に戻す</button>
+          </div>}
+        </div>
         <span className={`save-indicator ${saveState}`}>{saveState === "saved" ? "保存済み" : saveState === "saving" ? "保存中…" : saveState === "dirty" ? "未保存" : "保存エラー"}</span>
       </div>
     </header>
@@ -938,7 +1045,7 @@ export function App(): ReactNode {
     {(error !== null || notice !== null) && <div className={`banner ${error !== null ? "error" : "notice"}`} role="status"><span>{error ?? notice}</span><button aria-label="閉じる" onClick={clearMessages}><AppIcon name="close" /></button></div>}
 
     <div className="workspace" ref={workspaceRef} style={workspaceStyle}>
-      {!layout.zenMode && <aside className="activity-bar" style={{ gridColumn: columnFor("activity"), gridRow: "1 / -1" }} aria-label="表示切り替え">
+      {activityVisible && <aside className={`activity-bar activity-${layout.activityBar}`} style={{ gridColumn: columnFor("activity"), gridRow: "1 / -1" }} aria-label="表示切り替え">
         <div className="activity-main">
           {VIEW_IDS.map((view) => {
             const slot = slotOf(layout, view);
@@ -955,7 +1062,7 @@ export function App(): ReactNode {
             ><AppIcon name={view === "outline" ? "files" : view} /></button>;
           })}
         </div>
-        <div className="activity-foot"><button className="activity-button" onClick={() => openSettings("layout")} title="レイアウト設定"><AppIcon name="layout" /></button><button className="activity-button" onClick={() => openSettings("general")} title="設定"><AppIcon name="settings" /></button></div>
+        <div className="activity-foot"><button className="activity-button" onClick={() => openSettings("general")} title="設定"><AppIcon name="settings" /></button></div>
       </aside>}
 
       {renderSlot("primary")}
@@ -964,7 +1071,7 @@ export function App(): ReactNode {
       <main data-editor-pane className={`editor-pane manuscript-${theme} ${writingMode === "vertical-rl" ? "vertical" : "horizontal"}`} style={{ gridColumn: columnFor("editor"), gridRow: 1 }}>
         <div className="editor-toolbar">
           <div><span className="eyebrow">{writingMode === "vertical-rl" ? "VERTICAL WRITING" : "WRITING"}</span><h1>{chapter?.chapter.title ?? "章を選択"}</h1></div>
-          <div className="editor-actions"><button className="ghost compact" disabled={activeIndex <= 0} title="前へ移動" onClick={() => void moveChapter(-1)}>↑</button><button className="ghost compact" disabled={activeIndex < 0 || activeIndex >= manifestChapters.length - 1} title="後ろへ移動" onClick={() => void moveChapter(1)}>↓</button><button className="ghost compact action-with-icon" onClick={renameChapter}><AppIcon name="edit" />名前変更</button><button className="ghost compact danger-text" onClick={deleteChapter}>削除</button></div>
+          <div className="editor-actions"><details className="editor-more"><summary aria-label="章の操作" title="章の操作">…</summary><div className="editor-more-menu"><button disabled={activeIndex <= 0} onClick={(event) => { event.currentTarget.closest("details")?.removeAttribute("open"); void moveChapter(-1); }}>前へ移動</button><button disabled={activeIndex < 0 || activeIndex >= manifestChapters.length - 1} onClick={(event) => { event.currentTarget.closest("details")?.removeAttribute("open"); void moveChapter(1); }}>後ろへ移動</button><button onClick={(event) => { event.currentTarget.closest("details")?.removeAttribute("open"); void renameChapter(); }}>名前を変更</button><button className="danger-text" onClick={(event) => { event.currentTarget.closest("details")?.removeAttribute("open"); void deleteChapter(); }}>章を削除</button></div></details></div>
         </div>
         <div className="editor-scroll">
           <textarea
@@ -987,16 +1094,26 @@ export function App(): ReactNode {
       {dockDrag !== null && <div className="dock-layer" aria-hidden="true">
         <span className={`dock-target side-left ${dockDrag.target.kind === "side-edge" && dockDrag.target.side === "left" ? "active" : ""}`}>左</span>
         <span className={`dock-target side-right ${dockDrag.target.kind === "side-edge" && dockDrag.target.side === "right" ? "active" : ""}`}>右</span>
-        {!bottomVisible && <span className={`dock-target bottom ${dockDrag.target.kind === "bottom-edge" ? "active" : ""}`}>下部</span>}
+        <span className={`dock-target bottom ${dockDrag.target.kind === "bottom-edge" ? "active" : ""}`}>下部</span>
         <span className="dock-ghost" style={{ transform: `translate(${dockDrag.x + 14}px, ${dockDrag.y + 14}px)` }}>{VIEW_LABELS[dockDrag.view]}</span>
       </div>}
     </div>
     <span className="layout-announcement" aria-live="polite">{layoutAnnouncement}</span>
   </div>{promptDialog}{settingsOverlay}{viewMenu !== null && <div
+    ref={viewMenuRef}
     className="view-context-menu"
     role="menu"
     style={{ left: viewMenu.x, top: viewMenu.y }}
-    onKeyDown={(event) => { if (event.key === "Escape") setViewMenu(null); }}
+    onKeyDown={(event) => {
+      if (event.key === "Escape") { event.preventDefault(); setViewMenu(null); return; }
+      if (event.key !== "ArrowDown" && event.key !== "ArrowUp" && event.key !== "Home" && event.key !== "End") return;
+      event.preventDefault();
+      const items = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('button:not(:disabled)')];
+      if (items.length === 0) return;
+      const current = items.indexOf(document.activeElement as HTMLButtonElement);
+      const next = event.key === "Home" ? 0 : event.key === "End" ? items.length - 1 : event.key === "ArrowDown" ? (current + 1 + items.length) % items.length : (current - 1 + items.length) % items.length;
+      items[next]?.focus();
+    }}
   >
     <strong>{VIEW_LABELS[viewMenu.view]}</strong>
     <button role="menuitem" onClick={() => moveMenuView("left")}>このビューを左へ</button>
@@ -1007,6 +1124,10 @@ export function App(): ReactNode {
     <button role="menuitem" disabled={menuSlot === "bottom"} onClick={() => moveMenuPanel("right")}>このパネルを右へ</button>
     <button role="menuitem" onClick={() => reorderMenuView(-1)}>タブを左へ</button>
     <button role="menuitem" onClick={() => reorderMenuView(1)}>タブを右へ</button>
+    <span className="menu-separator" />
+    {menuSlot === "bottom" && <button role="menuitemcheckbox" aria-checked={layout.bottomPanelMaximized} onClick={() => { commitLayout({ ...layout, bottomPanelMaximized: !layout.bottomPanelMaximized }); setViewMenu(null); }}>{layout.bottomPanelMaximized ? "下部パネルを元の高さへ" : "下部パネルを最大化"}</button>}
+    {menuSlot === "bottom" && <button role="menuitem" onClick={() => { commitLayout({ ...layout, bottomPanelAlignment: layout.bottomPanelAlignment === "editor" ? "justify" : "editor" }); setViewMenu(null); }}>{layout.bottomPanelAlignment === "editor" ? "下部パネルを全幅へ" : "下部パネルを本文幅へ"}</button>}
+    {menuSlot !== null && <button role="menuitem" onClick={() => { const slot = layout.slots[menuSlot]; commitLayout({ ...layout, bottomPanelMaximized: menuSlot === "bottom" ? false : layout.bottomPanelMaximized, slots: { ...layout.slots, [menuSlot]: { ...slot, visible: false } } }, "パネルを閉じました"); setViewMenu(null); }}>パネルを閉じる</button>}
     <span className="menu-separator" />
     <button role="menuitem" onClick={() => { commitLayout(defaultLayout(), "レイアウトを既定へ戻しました"); setViewMenu(null); }}>既定レイアウトへ戻す</button>
   </div>}</div>;

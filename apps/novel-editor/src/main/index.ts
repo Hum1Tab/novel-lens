@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import { chmod, mkdir, readFile, readdir, realpath, writeFile } from "node:fs/promises";
+import { spawn } from "node:child_process";
 import { basename, dirname, extname, join, resolve } from "node:path";
 
 import { ProjectStore, type ProjectSettings } from "@novel-lens/project-store";
@@ -10,7 +11,7 @@ import { runLens, type LensExecutionInput } from "./lens.js";
 import type { ChapterDocument, LensRunInput, ProjectSummary } from "../shared/types.js";
 import { ConnectionManager } from "./connections.js";
 import { SecureCredentialStore } from "./secure-credentials.js";
-import { LATEST_RELEASE_PAGE, UpdateManager } from "./updates.js";
+import { installerLaunchArguments, LATEST_RELEASE_PAGE, UpdateManager } from "./updates.js";
 import { UserSettingsStore } from "./user-settings.js";
 
 // The editor does not use GPU-heavy features. Software rendering avoids startup
@@ -304,6 +305,13 @@ function registerIpc(): void {
     if (updateManager === null) throw new Error("更新機能をまだ利用できません。");
     const status = await updateManager.install(async (installerPath) => {
       if (process.platform === "linux" && installerPath.endsWith(".AppImage")) await chmod(installerPath, 0o700);
+      if (process.platform === "win32") {
+        return new Promise<string>((resolveLaunch) => {
+          const child = spawn(installerPath, installerLaunchArguments(process.platform), { detached: true, stdio: "ignore", windowsHide: true });
+          child.once("error", (error) => resolveLaunch(error.message));
+          child.once("spawn", () => { child.unref(); resolveLaunch(""); });
+        });
+      }
       return shell.openPath(installerPath);
     });
     if (status.state === "installing" && process.platform === "win32") {

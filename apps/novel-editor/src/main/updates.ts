@@ -72,6 +72,10 @@ export function chooseInstaller(assets: readonly ReleaseAsset[], platform: NodeJ
   return chooseInstallerAsset(assets, platform, architecture)?.browser_download_url ?? null;
 }
 
+export function installerLaunchArguments(platform: NodeJS.Platform): string[] {
+  return platform === "win32" ? ["/S", "--updated", "--force-run"] : [];
+}
+
 function checksumName(platform: NodeJS.Platform, architecture: string): string | null {
   const arch = architecture === "arm64" ? "arm64" : architecture === "x64" ? "x64" : null;
   if (arch === null) return null;
@@ -264,10 +268,10 @@ export class UpdateManager {
       if (this.status.state === "available") await this.download();
       if (this.status.state !== "ready" || this.downloadedPath === null) return this.snapshot();
       const installer = this.downloadedPath;
-      this.set({ ...this.status, state: "installing", message: "installerを起動しています…" });
+      this.set({ ...this.status, state: "installing", message: this.platform === "win32" ? "アプリを終了して更新を適用します…" : "installerを起動しています…" });
       const launchError = await launcher(installer);
       if (launchError.length > 0) throw new Error(`installerを起動できませんでした: ${launchError}`);
-      this.set({ ...this.status, state: "installing", message: "installerを起動しました。OSの案内に従って更新してください。" });
+      this.set({ ...this.status, state: "installing", message: this.platform === "win32" ? "更新中です。完了後に自動で再起動します。" : "installerを起動しました。OSの案内に従って更新してください。" });
       return this.snapshot();
     } catch (error) {
       this.set({ ...this.status, state: "error", progress: null, message: error instanceof Error ? error.message : "installerを起動できませんでした。" });
